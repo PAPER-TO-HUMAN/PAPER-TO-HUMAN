@@ -18,8 +18,14 @@ later session.
   becomes eligible to show after a translation.
 - "No participar" → `localStorage.setItem("consent", "false")`, hide banner,
   micro-test never shows for this user.
-- Consent state is read once on mount into React state (`consent: boolean |
-  null`) so the rest of the UI doesn't re-read localStorage repeatedly.
+- Consent is read via `useSyncExternalStore` over a tiny module-level
+  pub-sub, not a mount-time `useEffect` + `setState` — this project's ESLint
+  config (`react-hooks/set-state-in-effect`, part of the React Compiler
+  rule set) forbids synchronous `setState` inside an effect body and
+  explicitly recommends `useSyncExternalStore` for external mutable sources
+  like `localStorage`. The native `storage` event only fires in *other*
+  tabs, so `handleConsent` calls a manual `notifyConsentChange()` after
+  writing, to update the current tab too.
 
 ## Micro-test card
 
@@ -45,8 +51,11 @@ during this feature's design and added real `mode: "all" | "single"` and
 mode only generates one version). The derivation below uses that real state
 instead of inferring it, which is more accurate for the study data.
 
-- `mode`: the actual `mode` state value at submit time (`"all"` or
-  `"single"`).
+- `mode`: a snapshot of `mode` taken when `result` was set (`resultMode`),
+  not the live toggle state — the mode/level toggle isn't disabled once a
+  translation finishes, so a user could flip it after seeing results but
+  before submitting the micro-test, which would otherwise attribute the
+  response to a level/mode they never actually read.
 - **Selected version key**:
   - `mode === "single"` → `LEVEL_TO_COLUMN_KEY[selectedLevel]` (the only
     version that was generated).

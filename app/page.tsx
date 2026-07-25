@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { buildExportFile, versionPlainText } from "@/app/lib/export";
 import { randomFunFact, type FunFact } from "@/app/lib/funFacts";
 
@@ -29,6 +29,40 @@ interface TranslateResult {
   truncated: boolean;
   /** Non-fatal parse/generation problems reported by the API. */
   warnings?: string[];
+}
+
+interface MicroTestResponse {
+  paper_title: string;
+  level_chosen: string;
+  mode: string;
+  fh_score: number;
+  comprehension_text: string;
+  confidence_score: number;
+  utility_score: number;
+  timestamp: string;
+}
+
+// Consent is read from localStorage via useSyncExternalStore rather than a
+// mount-time effect, so this same-tab write also has to notify manually
+// (the native "storage" event only fires in *other* tabs).
+let consentListeners: Array<() => void> = [];
+function notifyConsentChange() {
+  for (const listener of consentListeners) listener();
+}
+function subscribeToConsent(callback: () => void) {
+  consentListeners.push(callback);
+  return () => {
+    consentListeners = consentListeners.filter((cb) => cb !== callback);
+  };
+}
+function getConsentSnapshot(): boolean | null {
+  const stored = localStorage.getItem("consent");
+  if (stored === "true") return true;
+  if (stored === "false") return false;
+  return null;
+}
+function getConsentServerSnapshot(): boolean | null {
+  return null;
 }
 
 type Mode = "all" | "single";
@@ -231,10 +265,27 @@ export default function Home() {
   const [result, setResult] = useState<TranslateResult | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const consent = useSyncExternalStore(
+    subscribeToConsent,
+    getConsentSnapshot,
+    getConsentServerSnapshot,
+  );
+  const [paperText, setPaperText] = useState("");
+  const [microTestOpen, setMicroTestOpen] = useState(true);
+  const [microTestDone, setMicroTestDone] = useState(false);
+  const [q1, setQ1] = useState("");
+  const [q2, setQ2] = useState<number | null>(null);
+  const [q3, setQ3] = useState<number | null>(null);
   const [funFact, setFunFact] = useState<FunFact | null>(null);
   const inputSectionRef = useRef<HTMLElement | null>(null);
   const [mode, setMode] = useState<Mode>("all");
   const [selectedLevel, setSelectedLevel] = useState<Level>("secundaria");
+  // Snapshot of mode/selectedLevel at the moment `result` was generated —
+  // the toggle above isn't disabled after translation finishes, so reading
+  // live `mode`/`selectedLevel` at micro-test submit time could attribute
+  // the response to a level/mode the user never actually saw.
+  const [resultMode, setResultMode] = useState<Mode>("all");
+  const [resultLevel, setResultLevel] = useState<Level>("secundaria");
 
   const busy = status === "extracting" || status === "translating";
   const canTranslate = (!!file || url.trim().length > 0) && !busy;
@@ -258,6 +309,11 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, [expandedKey]);
 
+  function handleConsent(value: boolean) {
+    localStorage.setItem("consent", value ? "true" : "false");
+    notifyConsentChange();
+  }
+
   function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0] ?? null;
     setError(null);
@@ -275,6 +331,12 @@ export default function Home() {
     setError(null);
     setResult(null);
     setCharCount(null);
+    setPaperText("");
+    setMicroTestDone(false);
+    setMicroTestOpen(true);
+    setQ1("");
+    setQ2(null);
+    setQ3(null);
 
     try {
       // ---- 1. Obtain the paper text (PDF upload or URL) ----
@@ -312,6 +374,7 @@ export default function Home() {
       }
 
       setCharCount(text.length);
+      setPaperText(text);
 
       // ---- 2. Translate into three versions ----
       setStatus("translating");
@@ -335,6 +398,8 @@ export default function Home() {
       }
 
       setResult(payload);
+      setResultMode(mode);
+      setResultLevel(selectedLevel);
       setFunFact(randomFunFact());
       setStatus("done");
     } catch (err) {
@@ -368,9 +433,67 @@ export default function Home() {
     URL.revokeObjectURL(href);
   }
 
+  function selectedVersionKey(): "v1" | "v2" | "v3" {
+    if (resultMode === "single") return LEVEL_TO_COLUMN_KEY[resultLevel];
+    if (expandedKey === "v1" || expandedKey === "v2" || expandedKey === "v3") {
+      return expandedKey;
+    }
+    return "v2";
+  }
+
+  function levelForVersionKey(key: "v1" | "v2" | "v3"): Level {
+    return (Object.keys(LEVEL_TO_COLUMN_KEY) as Level[]).find(
+      (level) => LEVEL_TO_COLUMN_KEY[level] === key,
+    )!;
+  }
+
+  function handleMicroTestSubmit() {
+    if (!result || !q1.trim() || q2 === null || q3 === null) return;
+
+    const key = selectedVersionKey();
+    const response: MicroTestResponse = {
+      paper_title: paperText.slice(0, 60),
+      level_chosen:
+        resultMode === "single" ? resultLevel : levelForVersionKey(key),
+      mode: resultMode,
+      fh_score: result.metrics[key]?.fh ?? 0,
+      comprehension_text: q1.trim(),
+      confidence_score: q2,
+      utility_score: q3,
+      timestamp: new Date().toISOString(),
+    };
+
+    console.log("MICRO_TEST_RESPONSE:", JSON.stringify(response));
+    setMicroTestDone(true);
+  }
+
   return (
     <div className="min-h-screen bg-background-base text-text-primary">
       <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
+        {/* ---- Consent banner ---- */}
+        {consent === null && (
+          <div className="mb-6 rounded-xl border border-light-blue bg-white p-4 text-sm text-text-primary shadow-sm">
+            <p className="mb-3">
+              Al usar Paper-to-Human, tus respuestas de comprensión pueden
+              usarse de forma anónima para investigación educativa.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => handleConsent(true)}
+                className="rounded-lg bg-primary-blue px-4 py-2 text-xs font-semibold text-white transition hover:bg-medium-blue"
+              >
+                Acepto
+              </button>
+              <button
+                onClick={() => handleConsent(false)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-text-primary transition hover:bg-slate-100"
+              >
+                No participar
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* ---- Header ---- */}
         <header className="mb-8 text-center">
           <h1 className="text-3xl font-bold tracking-tight text-primary-blue sm:text-4xl">
@@ -521,9 +644,11 @@ export default function Home() {
           </div>
         )}
 
-        {/* ---- Three-column output (SPEC 5.2) ---- */}
+        {/* ---- Three-column output (SPEC 5.2), or a single card in single-level mode ---- */}
         {result && (
-          <section className="grid grid-cols-1 gap-6 md:grid-cols-3">
+          <section
+            className={`grid grid-cols-1 gap-6 ${mode === "single" ? "" : "md:grid-cols-3"}`}
+          >
             {COLUMNS.map((col) => {
               const version = result[col.key];
               const metric = result.metrics[col.key];
@@ -616,11 +741,22 @@ export default function Home() {
                     the Spanish versions invited reading it as a baseline. The
                     API still returns metrics.original for the study's raw data.
                   */}
-                  {[
-                    { label: "Versión 1 (12 años)", m: result.metrics.v1 },
-                    { label: "Versión 2 (Público general)", m: result.metrics.v2 },
-                    { label: "Versión 3 (Profesional)", m: result.metrics.v3 },
-                  ].map((row) => (
+                  {(mode === "single"
+                    ? [
+                        {
+                          key: LEVEL_TO_COLUMN_KEY[selectedLevel],
+                          label: COLUMNS.find(
+                            (c) => c.key === LEVEL_TO_COLUMN_KEY[selectedLevel],
+                          )!.tableLabel,
+                          m: result.metrics[LEVEL_TO_COLUMN_KEY[selectedLevel]],
+                        },
+                      ]
+                    : [
+                        { key: "v1" as const, label: "Versión 1 (12 años)", m: result.metrics.v1 },
+                        { key: "v2" as const, label: "Versión 2 (Público general)", m: result.metrics.v2 },
+                        { key: "v3" as const, label: "Versión 3 (Profesional)", m: result.metrics.v3 },
+                      ]
+                  ).map((row) => (
                     <tr
                       key={row.label}
                       className="border-b border-slate-100 last:border-0"
@@ -639,38 +775,109 @@ export default function Home() {
                 </tbody>
               </table>
             </div>
-            <p className="mt-4 text-sm text-text-primary">
-              {(() => {
-                // Same-language (Spanish→Spanish) comparison: the professional
-                // version is the baseline, the general-public version is the
-                // intervention. The English original is excluded because FH is a
-                // Spanish-calibrated index and a cross-language gap is invalid.
-                const x = result.metrics.v3?.fh ?? null;
-                const y = result.metrics.v2?.fh ?? null;
+            {mode === "all" && (
+              <p className="mt-4 text-sm text-text-primary">
+                {(() => {
+                  // Same-language (Spanish→Spanish) comparison: the professional
+                  // version is the baseline, the general-public version is the
+                  // intervention. The English original is excluded because FH is a
+                  // Spanish-calibrated index and a cross-language gap is invalid.
+                  const x = result.metrics.v3?.fh ?? null;
+                  const y = result.metrics.v2?.fh ?? null;
 
-                if (x === null || y === null) {
-                  return "No se pudo calcular la comparación de legibilidad para estas versiones.";
-                }
+                  if (x === null || y === null) {
+                    return "No se pudo calcular la comparación de legibilidad para estas versiones.";
+                  }
 
-                const z = Math.round((y - x) * 10) / 10;
-                // The direction is asserted, not assumed: the previous wording
-                // claimed an improvement even when the score went down.
-                const verbo =
-                  z > 0 ? "mejoró" : z < 0 ? "redujo" : "no cambió";
-                const cambio =
-                  z > 0
-                    ? `un aumento de ${z.toFixed(1)} puntos`
-                    : z < 0
-                      ? `una disminución de ${Math.abs(z).toFixed(1)} puntos`
-                      : "sin cambio";
+                  const z = Math.round((y - x) * 10) / 10;
+                  // The direction is asserted, not assumed: the previous wording
+                  // claimed an improvement even when the score went down.
+                  const verbo =
+                    z > 0 ? "mejoró" : z < 0 ? "redujo" : "no cambió";
+                  const cambio =
+                    z > 0
+                      ? `un aumento de ${z.toFixed(1)} puntos`
+                      : z < 0
+                        ? `una disminución de ${Math.abs(z).toFixed(1)} puntos`
+                        : "sin cambio";
 
-                return `Paper-to-Human ${verbo} la legibilidad de ${x.toFixed(
-                  1,
-                )} a ${y.toFixed(
-                  1,
-                )} puntos Fernández-Huerta en la versión para público general — ${cambio}.`;
-              })()}
-            </p>
+                  return `Paper-to-Human ${verbo} la legibilidad de ${x.toFixed(
+                    1,
+                  )} a ${y.toFixed(
+                    1,
+                  )} puntos Fernández-Huerta en la versión para público general — ${cambio}.`;
+                })()}
+              </p>
+            )}
+          </section>
+        )}
+
+        {/* ---- Micro-test (post-translation feedback) ---- */}
+        {result && consent === true && (
+          <section className="mt-8 rounded-2xl border border-light-blue bg-light-blue p-6 shadow-sm">
+            {microTestDone ? (
+              <p className="text-sm text-text-primary">
+                ¡Gracias! Tus respuestas ayudan a mejorar Paper-to-Human.
+              </p>
+            ) : (
+              <>
+                <button
+                  onClick={() => setMicroTestOpen((o) => !o)}
+                  className="flex w-full items-center justify-between text-left"
+                >
+                  <h2 className="text-lg font-semibold text-primary-blue">
+                    ¿Qué tan bien entendiste el texto? (opcional, 1 min)
+                  </h2>
+                  <span className="text-text-primary">
+                    {microTestOpen ? "▲" : "▼"}
+                  </span>
+                </button>
+
+                {microTestOpen && (
+                  <div className="mt-4 space-y-5">
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-text-primary">
+                        En una oración, ¿cuál es la idea más importante del
+                        texto?
+                      </label>
+                      <input
+                        type="text"
+                        value={q1}
+                        onChange={(e) => setQ1(e.target.value.slice(0, 100))}
+                        maxLength={100}
+                        className="block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                      />
+                    </div>
+
+                    <RatingQuestion
+                      label="¿Qué tan bien sientes que entendiste el texto?"
+                      lowLabel="Nada"
+                      midLabel="Más o menos"
+                      highLabel="Muy bien"
+                      value={q2}
+                      onChange={setQ2}
+                    />
+
+                    <RatingQuestion
+                      label="¿Esta versión fue más fácil de entender que el texto original?"
+                      lowLabel="Mucho más difícil"
+                      midLabel="Igual"
+                      highLabel="Mucho más fácil"
+                      value={q3}
+                      onChange={setQ3}
+                    />
+
+                    <button
+                      onClick={handleMicroTestSubmit}
+                      disabled={!q1.trim() || q2 === null || q3 === null}
+                      className="rounded-lg bg-primary-blue px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-medium-blue disabled:cursor-not-allowed disabled:bg-slate-300"
+                    >
+                      Enviar respuestas
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
           </section>
         )}
 
@@ -795,6 +1002,50 @@ function ModalSection({ title, body }: { title: string; body: string }) {
         {title}
       </h3>
       <p className="whitespace-pre-line">{body}</p>
+    </div>
+  );
+}
+
+function RatingQuestion({
+  label,
+  lowLabel,
+  midLabel,
+  highLabel,
+  value,
+  onChange,
+}: {
+  label: string;
+  lowLabel: string;
+  midLabel: string;
+  highLabel: string;
+  value: number | null;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div>
+      <p className="mb-2 text-sm font-medium text-text-primary">{label}</p>
+      <div className="flex items-center gap-4">
+        {[1, 2, 3, 4, 5].map((n) => (
+          <label
+            key={n}
+            className="flex flex-col items-center gap-1 text-xs text-text-primary"
+          >
+            <input
+              type="radio"
+              name={label}
+              checked={value === n}
+              onChange={() => onChange(n)}
+              className="h-4 w-4"
+            />
+            {n}
+          </label>
+        ))}
+      </div>
+      <div className="mt-1 flex justify-between text-xs text-text-primary">
+        <span>1 = {lowLabel}</span>
+        <span>3 = {midLabel}</span>
+        <span>5 = {highLabel}</span>
+      </div>
     </div>
   );
 }
