@@ -14,10 +14,12 @@
 - Do not add any new npm dependencies.
 - Run `npx tsc --noEmit` after each task and confirm it passes before committing.
 - Consent banner text, micro-test question text, and button labels must match the exact Spanish copy given in the spec (see design doc `docs/superpowers/specs/2026-07-25-micro-test-design.md`).
-- `level_chosen` mapping: v1 → `"primaria"`, v2 → `"secundaria"`, v3 → `"avanzado"`.
-- `mode` is always the literal `"all"`.
-- Selected version = `expandedKey` at submit time if it is `"v1"`/`"v2"`/`"v3"`, else `"v2"`.
+- **Note:** commit `4c97150` (landed mid-design) added real `mode: "all" | "single"` and `selectedLevel: Level` state plus a `LEVEL_TO_COLUMN_KEY` mapping, and made `Version`/`Metric` fields on `TranslateResult` nullable. The plan below reads from that real state rather than inferring it.
+- `mode` = the actual `mode` state at submit time.
+- Selected version key: if `mode === "single"`, use `LEVEL_TO_COLUMN_KEY[selectedLevel]`. If `mode === "all"`, use `expandedKey` at submit time if it is `"v1"`/`"v2"`/`"v3"`, else `"v2"`.
+- `level_chosen`: if `mode === "single"`, use `selectedLevel` directly. If `mode === "all"`, derive from the selected version key via a reverse lookup of `LEVEL_TO_COLUMN_KEY` (do not duplicate the mapping).
 - `paper_title` = first 60 chars of the extracted paper text that is sent to `/api/translate` (the `text` local variable in `handleTranslate`, captured into state as `paperText`), not `result.source`.
+- `fh_score` = `result.metrics[selectedVersionKey]?.fh ?? 0` (both fields are nullable now).
 
 ---
 
@@ -149,12 +151,9 @@ interface MicroTestResponse {
   timestamp: string;
 }
 
-const LEVEL_BY_VERSION: Record<"v1" | "v2" | "v3", string> = {
-  v1: "primaria",
-  v2: "secundaria",
-  v3: "avanzado",
-};
 ```
+
+Do not add a level-mapping constant here — `LEVEL_TO_COLUMN_KEY` (already defined near the top of the file, mapping `Level` → `"v1"|"v2"|"v3"`) is reused instead, inverted, in Step 4 below.
 
 - [ ] **Step 2: Add micro-test state**
 
@@ -213,10 +212,17 @@ Add these functions inside `Home()`, near `handleDownload` (after its closing `}
 
 ```ts
   function selectedVersionKey(): "v1" | "v2" | "v3" {
+    if (mode === "single") return LEVEL_TO_COLUMN_KEY[selectedLevel];
     if (expandedKey === "v1" || expandedKey === "v2" || expandedKey === "v3") {
       return expandedKey;
     }
     return "v2";
+  }
+
+  function levelForVersionKey(key: "v1" | "v2" | "v3"): Level {
+    return (Object.keys(LEVEL_TO_COLUMN_KEY) as Level[]).find(
+      (level) => LEVEL_TO_COLUMN_KEY[level] === key,
+    )!;
   }
 
   function handleMicroTestSubmit() {
@@ -225,9 +231,9 @@ Add these functions inside `Home()`, near `handleDownload` (after its closing `}
     const key = selectedVersionKey();
     const response: MicroTestResponse = {
       paper_title: paperText.slice(0, 60),
-      level_chosen: LEVEL_BY_VERSION[key],
-      mode: "all",
-      fh_score: result.metrics[key].fh ?? 0,
+      level_chosen: mode === "single" ? selectedLevel : levelForVersionKey(key),
+      mode,
+      fh_score: result.metrics[key]?.fh ?? 0,
       comprehension_text: q1.trim(),
       confidence_score: q2,
       utility_score: q3,

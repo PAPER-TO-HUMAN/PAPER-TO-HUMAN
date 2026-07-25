@@ -38,26 +38,35 @@ later session.
 
 ## Data derivation (resolves gaps between the request and current app state)
 
-The current app has no per-level selection UI — it always generates and shows
-all three versions (v1/v2/v3) simultaneously. To fit the requested schema:
+**Update (post-review):** a concurrent commit (`4c97150`) landed on `main`
+during this feature's design and added real `mode: "all" | "single"` and
+`selectedLevel: Level` ("primaria"|"secundaria"|"avanzado") state, plus a
+`LEVEL_TO_COLUMN_KEY` mapping and nullable `Version`/`Metric` fields (single
+mode only generates one version). The derivation below uses that real state
+instead of inferring it, which is more accurate for the study data.
 
-- `mode`: hardcoded `"all"` (matches current, only, behavior).
-- `level_chosen`: fixed mapping from version key → Spanish level label:
-  - v1 ("12 años") → `"primaria"`
-  - v2 ("Público general") → `"secundaria"`
-  - v3 ("Profesional") → `"avanzado"`
-- **Selected version** for `level_chosen`/`fh_score`: the version the user
-  last opened in the expanded reading modal (`expandedKey` at submit time).
-  If they never opened one, default to `"v2"` (the study's intervention
-  version).
+- `mode`: the actual `mode` state value at submit time (`"all"` or
+  `"single"`).
+- **Selected version key**:
+  - `mode === "single"` → `LEVEL_TO_COLUMN_KEY[selectedLevel]` (the only
+    version that was generated).
+  - `mode === "all"` → the version the user last opened in the expanded
+    reading modal (`expandedKey` at submit time, if it is `"v1"`/`"v2"`/
+    `"v3"`), defaulting to `"v2"` if they never opened one.
+- `level_chosen`:
+  - `mode === "single"` → `selectedLevel` directly.
+  - `mode === "all"` → derived from the selected version key via the
+    existing `LEVEL_TO_COLUMN_KEY` mapping, inverted (v1→primaria,
+    v2→secundaria, v3→avanzado), reusing that constant rather than adding a
+    duplicate.
 - `paper_title`: first 60 chars of the extracted paper text actually sent to
   `/api/translate` (not `result.source`, which is a filename/URL/title
   label). This requires capturing that text into state (`paperText`) inside
   `handleTranslate`, since it's currently a function-local variable.
-- `fh_score`: `metrics[selectedVersion].fh` (may be `null` per the existing
-  `Metric` type — the schema types it as `number`, so a `null` FH is coerced
-  to `0` at log time rather than changing the schema; this only matters for
-  the small fraction of runs where the API declined to score).
+- `fh_score`: `metrics[selectedVersionKey]?.fh` (both the version and its
+  metric are now nullable per the current `TranslateResult` type — the
+  schema types `fh_score` as `number`, so a missing/`null` FH is coerced to
+  `0` at log time rather than changing the schema).
 
 ## Response object (on submit)
 
