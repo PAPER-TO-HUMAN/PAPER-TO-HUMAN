@@ -10,6 +10,15 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Paper-to-Human palette */
+  --color-primary-blue: #1e40af;
+  --color-medium-blue: #3b82f6;
+  --color-light-blue: #dbeafe;
+  --color-yellow-accent: #fcd34d;
+  --color-yellow-soft: #fef9c3;
+  --color-text-primary: #1e293b;
+  --color-background-base: #f8fafc;
 }
 
 @media (prefers-color-scheme: dark) {
