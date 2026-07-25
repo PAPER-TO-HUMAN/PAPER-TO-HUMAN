@@ -243,7 +243,12 @@ export async function POST(req: Request) {
     );
   }
 
-  let body: { text?: string; source?: string };
+  let body: {
+    text?: string;
+    source?: string;
+    mode?: string;
+    selectedLevel?: string;
+  };
   try {
     body = await req.json();
   } catch {
@@ -256,6 +261,21 @@ export async function POST(req: Request) {
 
   const source = typeof body.source === "string" ? body.source : "unknown";
   let text = (typeof body.text === "string" ? body.text : "").trim();
+
+  // Single-level selection mode (SPEC extension). "all" (or anything else,
+  // including undefined) preserves the original three-version behavior.
+  const mode: "single" | "all" = body.mode === "single" ? "single" : "all";
+  const selectedLevel: "primaria" | "secundaria" | "avanzado" =
+    body.selectedLevel === "primaria" ||
+    body.selectedLevel === "secundaria" ||
+    body.selectedLevel === "avanzado"
+      ? body.selectedLevel
+      : "secundaria";
+  const LEVEL_TO_VERSION = {
+    primaria: "v1",
+    secundaria: "v2",
+    avanzado: "v3",
+  } as const;
 
   if (text.length < MIN_CHARS) {
     return Response.json(
@@ -271,11 +291,24 @@ export async function POST(req: Request) {
     truncated = true;
   }
 
-  // Guard 4 — total-token safety cap across all three prompts. The 12,000-char
-  // truncation above normally keeps this well under MAX_TOTAL_TOKENS; this is a
-  // defensive net (e.g. if MAX_CHARS is ever raised).
-  const totalTokens = [USER_PROMPT_V1, USER_PROMPT_V2, USER_PROMPT_V3].reduce(
-    (sum, template) =>
+  const ALL_VERSIONS: Array<[string, string]> = [
+    ["v1", USER_PROMPT_V1],
+    ["v2", USER_PROMPT_V2],
+    ["v3", USER_PROMPT_V3],
+  ];
+  // Single-level mode runs (and estimates tokens for) only the selected
+  // level's prompt instead of all three (SPEC extension).
+  const VERSIONS =
+    mode === "single"
+      ? ALL_VERSIONS.filter(([label]) => label === LEVEL_TO_VERSION[selectedLevel])
+      : ALL_VERSIONS;
+
+  // Guard 4 — total-token safety cap across the prompts that will actually
+  // run. The 12,000-char truncation above normally keeps this well under
+  // MAX_TOTAL_TOKENS; this is a defensive net (e.g. if MAX_CHARS is ever
+  // raised).
+  const totalTokens = VERSIONS.reduce(
+    (sum, [, template]) =>
       sum +
       estimateTokens(SYSTEM_PROMPT) +
       estimateTokens(buildUserPrompt(template, text)),
@@ -340,13 +373,8 @@ export async function POST(req: Request) {
     );
   }
 
-  const VERSIONS: Array<[string, string]> = [
-    ["v1", USER_PROMPT_V1],
-    ["v2", USER_PROMPT_V2],
-    ["v3", USER_PROMPT_V3],
-  ];
-
-  // SPEC 4.2 — generate all three versions simultaneously.
+  // SPEC 4.2 — generate all three versions simultaneously (or, in single
+  // mode, just the one selected above).
   //
   // allSettled rather than all: Promise.all rejects on the first failure and
   // discards the other two responses even though they succeeded and were paid
@@ -410,14 +438,23 @@ export async function POST(req: Request) {
     console.warn("Translate response warnings:", warnings);
   }
 
-  const [v1, v2, v3] = parsed.map((p) => p.version);
+  // Map generated versions back onto their labels. In single mode, VERSIONS
+  // only contains the selected label, so the other two stay `null` — same
+  // response shape, unused levels just aren't populated.
+  const producedByLabel = new Map<string, Version>();
+  VERSIONS.forEach(([label], i) => producedByLabel.set(label, parsed[i].version));
 
-  // SPEC 4.4 / Section 10 — Fernández-Huerta for the original and each version.
+  const v1 = producedByLabel.get("v1") ?? null;
+  const v2 = producedByLabel.get("v2") ?? null;
+  const v3 = producedByLabel.get("v3") ?? null;
+
+  // SPEC 4.4 / Section 10 — Fernández-Huerta for the original and each
+  // generated version; ungenerated (single-mode) versions stay null.
   const metrics = {
     original: metricsFor(text),
-    v1: metricsFor(versionText(v1)),
-    v2: metricsFor(versionText(v2)),
-    v3: metricsFor(versionText(v3)),
+    v1: v1 ? metricsFor(versionText(v1)) : null,
+    v2: v2 ? metricsFor(versionText(v2)) : null,
+    v3: v3 ? metricsFor(versionText(v3)) : null,
   };
 
   return Response.json({ v1, v2, v3, metrics, source, truncated, warnings });

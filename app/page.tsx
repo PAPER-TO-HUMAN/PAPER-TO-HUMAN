@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { buildExportFile, versionPlainText } from "@/app/lib/export";
+import { randomFunFact, type FunFact } from "@/app/lib/funFacts";
 
 // ---- Types (match the /api/translate payload confirmed in Session 1) ----
 interface Version {
@@ -14,20 +15,38 @@ interface Metric {
   fh: number | null;
 }
 interface TranslateResult {
-  v1: Version;
-  v2: Version;
-  v3: Version;
+  // null for levels not generated in single-level mode.
+  v1: Version | null;
+  v2: Version | null;
+  v3: Version | null;
   metrics: {
     original: Metric;
-    v1: Metric;
-    v2: Metric;
-    v3: Metric;
+    v1: Metric | null;
+    v2: Metric | null;
+    v3: Metric | null;
   };
   source: string;
   truncated: boolean;
   /** Non-fatal parse/generation problems reported by the API. */
   warnings?: string[];
 }
+
+type Mode = "all" | "single";
+type Level = "primaria" | "secundaria" | "avanzado";
+
+const LEVEL_OPTIONS: Array<{ key: Level; label: string }> = [
+  { key: "primaria", label: "Nivel Primaria" },
+  { key: "secundaria", label: "Nivel Secundaria" },
+  { key: "avanzado", label: "Nivel Avanzado (Preparatoria / Universidad)" },
+];
+
+// Maps a selection-mode level to the column key it corresponds to (see
+// COLUMNS below and the mapping mirrored in /api/translate/route.ts).
+const LEVEL_TO_COLUMN_KEY: Record<Level, "v1" | "v2" | "v3"> = {
+  primaria: "v1",
+  secundaria: "v2",
+  avanzado: "v3",
+};
 
 /**
  * Parse a JSON response, tolerating a non-JSON body.
@@ -59,15 +78,20 @@ const MIN_CHARS = 200;
 
 // SPEC 5.2 — column labels (UI in Mexican Spanish; "Versión"/"Grade" per request).
 const COLUMNS = [
-  { key: "v1", label: "Versión 1: 12 años", tableLabel: "Versión 1 (12 años)", order: "" },
+  { key: "v1", label: "Nivel Primaria", tableLabel: "Versión 1 (12 años)", order: "" },
   // V2 is the study intervention version → first on mobile (SPEC 5.2).
   {
     key: "v2",
-    label: "Versión 2: Público general",
+    label: "Nivel Secundaria",
     tableLabel: "Versión 2 (Público general)",
     order: "order-first md:order-none",
   },
-  { key: "v3", label: "Versión 3: Profesional", tableLabel: "Versión 3 (Profesional)", order: "" },
+  {
+    key: "v3",
+    label: "Nivel Avanzado (Preparatoria / Universidad)",
+    tableLabel: "Versión 3 (Profesional)",
+    order: "",
+  },
 ] as const;
 
 // Display-time translation of API/route error strings (routes stay English/untouched).
@@ -115,12 +139,13 @@ function fhLevel(score: number | null): string {
   return "Muy difícil";
 }
 
-// Badge colors: green ≥70 (easy), yellow 50–69 (standard), red <50 (difficult).
+// Badge colors: blue scale for every tier except "Estándar", which is the
+// one badge the palette allows in yellow (SPEC — yellow usage rules).
 function fhBadgeClasses(score: number | null): string {
-  if (score === null) return "bg-slate-100 text-slate-600 ring-slate-300";
-  if (score >= 70) return "bg-green-100 text-green-800 ring-green-300";
-  if (score >= 50) return "bg-yellow-100 text-yellow-800 ring-yellow-300";
-  return "bg-red-100 text-red-800 ring-red-300";
+  if (score === null) return "bg-light-blue text-text-primary ring-light-blue";
+  if (score >= 70) return "bg-light-blue text-primary-blue ring-medium-blue";
+  if (score >= 50) return "bg-yellow-soft text-text-primary ring-yellow-accent";
+  return "bg-medium-blue text-white ring-primary-blue";
 }
 
 /** Format a score for display, or "—" when there is none. */
@@ -206,9 +231,22 @@ export default function Home() {
   const [result, setResult] = useState<TranslateResult | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [funFact, setFunFact] = useState<FunFact | null>(null);
+  const inputSectionRef = useRef<HTMLElement | null>(null);
+  const [mode, setMode] = useState<Mode>("all");
+  const [selectedLevel, setSelectedLevel] = useState<Level>("secundaria");
 
   const busy = status === "extracting" || status === "translating";
   const canTranslate = (!!file || url.trim().length > 0) && !busy;
+
+  // Fun facts card — pre-fill the URL input with the fact's source paper and
+  // scroll back up, rather than auto-triggering a translation mid-render.
+  function handleUseFunFactPaper(paperUrl: string) {
+    setFile(null);
+    setUrl(paperUrl);
+    setCharCount(null);
+    inputSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   // Close the expanded reading view on ESC.
   useEffect(() => {
@@ -280,7 +318,7 @@ export default function Home() {
       const res = await fetch("/api/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, source }),
+        body: JSON.stringify({ text, source, mode, selectedLevel }),
       });
       const data = await readJson(res);
       if (!res.ok) {
@@ -297,6 +335,7 @@ export default function Home() {
       }
 
       setResult(payload);
+      setFunFact(randomFunFact());
       setStatus("done");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Algo salió mal.";
@@ -330,24 +369,79 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className="min-h-screen bg-background-base text-text-primary">
       <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
         {/* ---- Header ---- */}
         <header className="mb-8 text-center">
-          <h1 className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
+          <h1 className="text-3xl font-bold tracking-tight text-primary-blue sm:text-4xl">
             Paper-to-Human
           </h1>
-          <p className="mt-2 text-base text-slate-600">
+          <p className="mt-2 text-base text-text-primary">
             Traduce un artículo académico en tres niveles de lectura.
           </p>
         </header>
 
+        {/* ---- Level selection mode toggle ---- */}
+        <section className="mb-6 rounded-2xl border border-light-blue bg-light-blue p-4 shadow-sm">
+          <div className="inline-flex rounded-full border border-light-blue bg-white p-1">
+            <button
+              type="button"
+              onClick={() => setMode("all")}
+              disabled={busy}
+              className={`rounded-full px-4 py-1.5 text-sm font-semibold transition ${
+                mode === "all"
+                  ? "bg-primary-blue text-white shadow-sm"
+                  : "text-text-primary hover:bg-light-blue"
+              }`}
+            >
+              Ver los 3 niveles
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("single")}
+              disabled={busy}
+              className={`rounded-full px-4 py-1.5 text-sm font-semibold transition ${
+                mode === "single"
+                  ? "bg-primary-blue text-white shadow-sm"
+                  : "text-text-primary hover:bg-light-blue"
+              }`}
+            >
+              Elegir un nivel
+            </button>
+          </div>
+
+          {mode === "single" && (
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-6">
+              {LEVEL_OPTIONS.map((opt) => (
+                <label
+                  key={opt.key}
+                  className="flex items-center gap-2 text-sm text-text-primary"
+                >
+                  <input
+                    type="radio"
+                    name="selectedLevel"
+                    value={opt.key}
+                    checked={selectedLevel === opt.key}
+                    onChange={() => setSelectedLevel(opt.key)}
+                    disabled={busy}
+                    className="h-4 w-4 border-light-blue text-primary-blue focus:ring-primary-blue"
+                  />
+                  {opt.label}
+                </label>
+              ))}
+            </div>
+          )}
+        </section>
+
         {/* ---- Input section ---- */}
-        <section className="mb-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <section
+          ref={inputSectionRef}
+          className="mb-8 rounded-2xl border border-light-blue bg-light-blue p-6 shadow-sm"
+        >
           <div className="grid gap-6 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
             {/* PDF upload */}
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">
+              <label className="mb-2 block text-sm font-medium text-text-primary">
                 Sube un PDF
               </label>
               <input
@@ -355,19 +449,19 @@ export default function Home() {
                 accept=".pdf,application/pdf"
                 onChange={onFileChange}
                 disabled={busy}
-                className="block w-full cursor-pointer rounded-lg border border-slate-300 text-sm text-slate-600 file:mr-3 file:cursor-pointer file:border-0 file:bg-slate-100 file:px-4 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
+                className="block w-full cursor-pointer rounded-lg border border-slate-300 text-sm text-text-primary file:mr-3 file:cursor-pointer file:border-0 file:bg-slate-100 file:px-4 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
               />
-              <p className="mt-1 text-xs text-slate-400">Solo .pdf · máximo 5MB</p>
+              <p className="mt-1 text-xs text-text-primary">Solo .pdf · máximo 5MB</p>
             </div>
 
             {/* OR divider */}
-            <div className="hidden text-center text-sm font-medium text-slate-400 sm:block">
+            <div className="hidden text-center text-sm font-medium text-text-primary sm:block">
               O
             </div>
 
             {/* URL field */}
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">
+              <label className="mb-2 block text-sm font-medium text-text-primary">
                 Pega la URL del artículo
               </label>
               <input
@@ -389,13 +483,13 @@ export default function Home() {
             <button
               onClick={handleTranslate}
               disabled={!canTranslate}
-              className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="inline-flex items-center justify-center rounded-lg bg-primary-blue px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-medium-blue disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               {busy ? "Procesando…" : "Traducir"}
             </button>
 
             {charCount !== null && (
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-text-primary">
                 Se extrajeron {charCount.toLocaleString()} caracteres
                 {charCount > MAX_CHARS && (
                   <span className="ml-1 text-amber-600">
@@ -431,15 +525,16 @@ export default function Home() {
         {result && (
           <section className="grid grid-cols-1 gap-6 md:grid-cols-3">
             {COLUMNS.map((col) => {
-              const version = result[col.key] as Version;
+              const version = result[col.key];
               const metric = result.metrics[col.key];
+              if (!version || !metric) return null;
               return (
                 <article
                   key={col.key}
-                  className={`flex flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm ${col.order}`}
+                  className={`flex flex-col rounded-2xl border border-light-blue bg-light-blue p-5 shadow-sm ${col.order}`}
                 >
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-                    <span className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white">
+                    <span className="rounded-full bg-primary-blue px-3 py-1 text-xs font-semibold text-white">
                       {col.label}
                     </span>
                     <div className="flex items-center gap-2">
@@ -454,7 +549,7 @@ export default function Home() {
                         onClick={() => setExpandedKey(col.key)}
                         aria-label="Ampliar"
                         title="Ampliar"
-                        className="rounded-md border border-slate-300 px-2 py-1 text-xs leading-none text-slate-600 transition hover:bg-slate-100"
+                        className="rounded-md border border-slate-300 px-2 py-1 text-xs leading-none text-text-primary transition hover:bg-slate-100"
                       >
                         ⛶
                       </button>
@@ -471,7 +566,7 @@ export default function Home() {
                       onClick={() =>
                         handleCopy(col.key, versionPlainText(version))
                       }
-                      className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                      className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-text-primary transition hover:bg-slate-100"
                     >
                       {copiedKey === col.key ? "Copiado ✓" : "Copiar"}
                     </button>
@@ -487,7 +582,7 @@ export default function Home() {
                           }),
                         )
                       }
-                      className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                      className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-text-primary transition hover:bg-slate-100"
                     >
                       Descargar .txt
                     </button>
@@ -500,14 +595,14 @@ export default function Home() {
 
         {/* ---- Complexity table (SPEC 4.4 / 5.1) — below the three columns ---- */}
         {result && (
-          <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="mb-4 text-lg font-semibold text-slate-900">
+          <section className="mt-8 rounded-2xl border border-light-blue bg-light-blue p-6 shadow-sm">
+            <h2 className="mb-4 text-lg font-semibold text-primary-blue">
               Comparación de complejidad
             </h2>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-slate-200 text-left text-slate-500">
+                  <tr className="border-b border-slate-200 text-left text-text-primary">
                     <th className="py-2 pr-4 font-semibold">Texto</th>
                     <th className="py-2 pr-4 font-semibold">Fernández-Huerta</th>
                     <th className="py-2 font-semibold">Nivel</th>
@@ -530,28 +625,28 @@ export default function Home() {
                       key={row.label}
                       className="border-b border-slate-100 last:border-0"
                     >
-                      <td className="py-2 pr-4 font-medium text-slate-700">
+                      <td className="py-2 pr-4 font-medium text-text-primary">
                         {row.label}
                       </td>
-                      <td className="py-2 pr-4 text-slate-700">
-                        {fhText(row.m.fh)}
+                      <td className="py-2 pr-4 text-text-primary">
+                        {fhText(row.m?.fh ?? null)}
                       </td>
-                      <td className="py-2 text-slate-700">
-                        {fhLevel(row.m.fh)}
+                      <td className="py-2 text-text-primary">
+                        {fhLevel(row.m?.fh ?? null)}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <p className="mt-4 text-sm text-slate-600">
+            <p className="mt-4 text-sm text-text-primary">
               {(() => {
                 // Same-language (Spanish→Spanish) comparison: the professional
                 // version is the baseline, the general-public version is the
                 // intervention. The English original is excluded because FH is a
                 // Spanish-calibrated index and a cross-language gap is invalid.
-                const x = result.metrics.v3.fh;
-                const y = result.metrics.v2.fh;
+                const x = result.metrics.v3?.fh ?? null;
+                const y = result.metrics.v2?.fh ?? null;
 
                 if (x === null || y === null) {
                   return "No se pudo calcular la comparación de legibilidad para estas versiones.";
@@ -579,8 +674,42 @@ export default function Home() {
           </section>
         )}
 
+        {/* ---- Fun fact card ---- */}
+        {result && funFact && (
+          <section className="mt-8 rounded-2xl border-l-4 border-yellow-accent bg-yellow-soft p-6 shadow-sm">
+            <div className="mb-2 flex items-center gap-2">
+              <span aria-hidden className="text-xl">💡</span>
+              <h2 className="text-base font-semibold text-medium-blue">
+                ¿Sabías que...?
+              </h2>
+            </div>
+            <p className="text-sm leading-relaxed text-text-primary">
+              {funFact.fact}
+            </p>
+            <span className="mt-3 inline-block rounded-full bg-light-blue px-2.5 py-1 text-xs font-semibold text-primary-blue">
+              {funFact.topic}
+            </span>
+            <div className="mt-4 flex flex-wrap items-center gap-4">
+              <a
+                href={funFact.paperUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-semibold text-medium-blue underline-offset-2 hover:underline"
+              >
+                Leer el paper original →
+              </a>
+              <button
+                onClick={() => handleUseFunFactPaper(funFact.paperUrl)}
+                className="rounded-lg bg-primary-blue px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-medium-blue"
+              >
+                Simplificar este paper
+              </button>
+            </div>
+          </section>
+        )}
+
         {/* ---- Footer (SPEC 5.3) ---- */}
-        <footer className="mt-12 border-t border-slate-200 pt-6 text-center text-xs leading-relaxed text-slate-400">
+        <footer className="mt-12 border-t border-slate-200 pt-6 text-center text-xs leading-relaxed text-text-primary">
           Paper-to-Human es parte de un estudio de investigación ISEF sobre
           traducción de complejidad mediada por IA. Todos los resultados deben
           verificarse contra la fuente original antes de usarse en contextos
@@ -593,8 +722,9 @@ export default function Home() {
         expandedKey &&
         (() => {
           const col = COLUMNS.find((c) => c.key === expandedKey)!;
-          const version = result[col.key] as Version;
+          const version = result[col.key];
           const metric = result.metrics[col.key];
+          if (!version || !metric) return null;
           return (
             <div
               onClick={() => setExpandedKey(null)}
@@ -609,13 +739,13 @@ export default function Home() {
                   onClick={() => setExpandedKey(null)}
                   aria-label="Cerrar"
                   title="Cerrar"
-                  className="absolute right-4 top-4 rounded-full p-2 text-lg leading-none text-slate-500 transition hover:bg-slate-100"
+                  className="absolute right-4 top-4 rounded-full p-2 text-lg leading-none text-text-primary transition hover:bg-slate-100"
                 >
                   ✕
                 </button>
 
                 <div className="mb-6 flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white">
+                  <span className="rounded-full bg-primary-blue px-3 py-1 text-xs font-semibold text-white">
                     {col.label}
                   </span>
                   <span
@@ -628,7 +758,7 @@ export default function Home() {
                 </div>
 
                 <div
-                  className="text-slate-700"
+                  className="text-text-primary"
                   style={{ fontSize: "18px", lineHeight: 1.8 }}
                 >
                   <ModalSection title="Resumen" body={version.summary} />
@@ -647,10 +777,10 @@ function Section({ title, body }: { title: string; body: string }) {
   if (!body) return null;
   return (
     <div className="mb-4 last:mb-0">
-      <h3 className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+      <h3 className="mb-1 text-xs font-bold uppercase tracking-wide text-text-primary">
         {title}
       </h3>
-      <p className="whitespace-pre-line text-sm leading-relaxed text-slate-700">
+      <p className="whitespace-pre-line text-sm leading-relaxed text-text-primary">
         {body}
       </p>
     </div>
@@ -661,7 +791,7 @@ function ModalSection({ title, body }: { title: string; body: string }) {
   if (!body) return null;
   return (
     <div className="mb-6 last:mb-0">
-      <h3 className="mb-2 text-sm font-bold uppercase tracking-wide text-slate-500">
+      <h3 className="mb-2 text-sm font-bold uppercase tracking-wide text-text-primary">
         {title}
       </h3>
       <p className="whitespace-pre-line">{body}</p>
