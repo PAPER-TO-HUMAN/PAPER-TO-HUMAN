@@ -265,6 +265,7 @@ export default function Home() {
   const [result, setResult] = useState<TranslateResult | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [personalization, setPersonalization] = useState<{familiarity: string; purpose: string; style: string} | null>(null);
   const consent = useSyncExternalStore(
     subscribeToConsent,
     getConsentSnapshot,
