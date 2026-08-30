@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { buildExportFile, versionPlainText } from "@/app/lib/export";
 import { randomFunFact, type FunFact } from "@/app/lib/funFacts";
-import PersonalizationForm from "@/app/components/PersonalizationForm";
+import PersonalizationFormNew from "@/app/components/PersonalizationForm";
 // ---- Types (match the /api/translate payload confirmed in Session 1) ----
 interface Version {
   summary: string;
