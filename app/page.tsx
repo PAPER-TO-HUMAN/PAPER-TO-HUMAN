@@ -559,6 +559,7 @@ export default function Home() {
          {!personalization && (
   <PersonalizationFormNew onComplete={setPersonalization} />
 )}
+        {personalization && (
         {/* ---- Input section ---- */}
         <section
           ref={inputSectionRef}
@@ -626,7 +627,7 @@ export default function Home() {
               </p>
             )}
           </div>
-        </section>
+        </section> )}
 
         {/* ---- Loading state ---- */}
         {busy && (
