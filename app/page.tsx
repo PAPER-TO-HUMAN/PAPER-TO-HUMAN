@@ -556,7 +556,9 @@ export default function Home() {
             </div>
           )}
         </section>
-
+         {!personalization && (
+  <PersonalizationFormNew onComplete={setPersonalization} />
+)}
         {/* ---- Input section ---- */}
         <section
           ref={inputSectionRef}
