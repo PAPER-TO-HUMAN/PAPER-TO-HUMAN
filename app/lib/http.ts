@@ -15,8 +15,10 @@ const DEV_ORIGINS = [
 /**
  * Allowed browser origins.
  *
- * Production: exactly what `ALLOWED_ORIGIN` names (comma-separated for the
- * Vercel preview + custom-domain case). Development: localhost is added.
+ * Production: exactly what `ALLOWED_ORIGIN` names — a comma-separated list,
+ * so both the production domain and preview URLs can be whitelisted at
+ * once. Development: localhost is added. Callers should check `checkOrigin`
+ * for the empty/unset `ALLOWED_ORIGIN` case, which bypasses this entirely.
  *
  * Computed per call rather than at module load so a missing/late env var in a
  * serverless cold start is still picked up.
@@ -41,12 +43,18 @@ function allowedOrigins(): string[] {
  * fetch/XHR, so `sec-fetch-site: same-origin` (or the header being absent
  * entirely, i.e. a non-browser client) is the safe case.
  *
+ * If `ALLOWED_ORIGIN` is empty or unset, the guard is disabled entirely and
+ * all origins are allowed — this keeps the check opt-in for deploys that
+ * haven't configured it yet, rather than silently locking out everyone.
+ *
  * NOTE: this is a same-origin guard, not authentication. It stops casual
  * embedding and drive-by use of the endpoint from other sites; it does not
  * stop a determined caller with curl, which can forge any header. The rate
  * limiter below is what bounds abuse from those.
  */
 export function checkOrigin(req: Request): Response | null {
+  if (!(process.env.ALLOWED_ORIGIN ?? "").trim()) return null;
+
   const origin = req.headers.get("origin");
 
   if (origin) {
