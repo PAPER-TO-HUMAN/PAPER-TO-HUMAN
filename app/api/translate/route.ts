@@ -5,6 +5,8 @@ import {
   USER_PROMPT_V1,
   USER_PROMPT_V2,
   USER_PROMPT_V3,
+  QUIZ_SYSTEM_PROMPT,
+  QUIZ_USER_PROMPT,
   buildUserPrompt,
 } from "@/app/lib/prompts";
 import { checkEnv, checkOrigin, checkRateLimit } from "@/app/lib/http";
@@ -27,6 +29,9 @@ const MAX_TOTAL_TOKENS = 15_000; // safety cap on total input tokens across all 
 // Spanish tokenizes less densely than English and a truncated response is
 // silently unparseable, so this is deliberately generous.
 const MAX_OUTPUT_TOKENS = 4_000;
+
+// 3 questions + 4 options each is short; generous headroom for Spanish text.
+const QUIZ_MAX_OUTPUT_TOKENS = 1_024;
 
 // Per-call ceiling, comfortably inside maxDuration so a stuck upstream call
 // surfaces as our own timeout message rather than the platform killing the
@@ -184,6 +189,55 @@ function parseVersion(raw: string): ParseResult {
 /** Concatenate parsed sections back into plain text for scoring. */
 function versionText(v: Version): string {
   return [v.summary, v.concepts, v.analogy].filter(Boolean).join("\n\n");
+}
+
+interface QuizQuestion {
+  question: string;
+  options: string[];
+  correctIndex: number;
+}
+
+/** Strip a ```json fence if the model wrapped its output despite instructions not to. */
+function stripCodeFence(raw: string): string {
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(raw);
+  return fenced ? fenced[1] : raw;
+}
+
+/** Throws with a specific reason on any shape mismatch — caller degrades to []. */
+function validateQuizItem(item: unknown, index: number): QuizQuestion {
+  if (typeof item !== "object" || item === null) {
+    throw new Error(`quiz item ${index} is not an object`);
+  }
+  const { question, options, correctIndex } = item as Record<string, unknown>;
+
+  if (typeof question !== "string" || !question.trim()) {
+    throw new Error(`quiz item ${index} has an invalid question`);
+  }
+  if (
+    !Array.isArray(options) ||
+    options.length !== 4 ||
+    !options.every((o) => typeof o === "string" && o.trim())
+  ) {
+    throw new Error(`quiz item ${index} has invalid options`);
+  }
+  if (
+    typeof correctIndex !== "number" ||
+    !Number.isInteger(correctIndex) ||
+    correctIndex < 0 ||
+    correctIndex > 3
+  ) {
+    throw new Error(`quiz item ${index} has an invalid correctIndex`);
+  }
+
+  return { question, options: options as string[], correctIndex };
+}
+
+/** Validate the full parsed quiz payload: exactly 3 well-formed items. */
+function validateQuiz(parsed: unknown): QuizQuestion[] {
+  if (!Array.isArray(parsed) || parsed.length !== 3) {
+    throw new Error("quiz response is not an array of exactly 3 items");
+  }
+  return parsed.map((item, i) => validateQuizItem(item, i));
 }
 
 /** Map an Anthropic SDK error onto a user-facing message and HTTP status. */
@@ -358,6 +412,37 @@ export async function POST(req: Request) {
   }
 
   /**
+   * Generate the 3-question comprehension quiz. Best-effort: this is a bonus
+   * feature layered on top of the study's core translation output, so ANY
+   * failure (API error, unparsable JSON, wrong shape, out-of-range
+   * correctIndex) degrades to an empty quiz instead of failing the request.
+   */
+  async function generateQuiz(quizText: string): Promise<QuizQuestion[]> {
+    try {
+      const message = await client.messages.create({
+        model: MODEL,
+        max_tokens: QUIZ_MAX_OUTPUT_TOKENS,
+        system: QUIZ_SYSTEM_PROMPT,
+        messages: [
+          { role: "user", content: buildUserPrompt(QUIZ_USER_PROMPT, quizText) },
+        ],
+      });
+
+      const raw = message.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("")
+        .trim();
+
+      const parsed: unknown = JSON.parse(stripCodeFence(raw));
+      return validateQuiz(parsed);
+    } catch (err) {
+      console.warn("Quiz generation failed, degrading to empty quiz:", err);
+      return [];
+    }
+  }
+
+  /**
    * Is this error worth a second attempt?
    *
    * A 400 or an auth failure will fail identically every time; retrying only
@@ -380,6 +465,16 @@ export async function POST(req: Request) {
   // discards the other two responses even though they succeeded and were paid
   // for. Here only the failed version is retried — the two that succeeded are
   // kept, so a transient blip costs one extra call instead of three.
+  //
+  // The quiz call is started here too (not awaited yet) so it runs
+  // concurrently with the version calls. It is independent of VERSIONS/mode —
+  // one shared quiz regardless of single vs. all-levels — and never rejects
+  // (generateQuiz catches its own errors), but is still wrapped in
+  // Promise.allSettled for defense in depth.
+  const quizPromise = Promise.allSettled([generateQuiz(text)]).then(([r]) =>
+    r.status === "fulfilled" ? r.value : [],
+  );
+
   const settled = await Promise.allSettled(
     VERSIONS.map(([label, template]) => generate(label, template)),
   );
@@ -457,5 +552,7 @@ export async function POST(req: Request) {
     v3: v3 ? metricsFor(versionText(v3)) : null,
   };
 
-  return Response.json({ v1, v2, v3, metrics, source, truncated, warnings });
+  const quiz = await quizPromise;
+
+  return Response.json({ v1, v2, v3, metrics, source, truncated, warnings, quiz });
 }

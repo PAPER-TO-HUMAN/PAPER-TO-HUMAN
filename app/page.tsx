@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { buildExportFile, versionPlainText } from "@/app/lib/export";
-import { randomFunFact, type FunFact } from "@/app/lib/funFacts";
 
 // ---- Types (match the /api/translate payload confirmed in Session 1) ----
 interface Version {
@@ -14,6 +13,12 @@ interface Metric {
   /** null when the API could not score the text (e.g. empty model output). */
   fh: number | null;
 }
+interface QuizQuestion {
+  question: string;
+  options: string[];
+  correctIndex: number;
+}
+
 interface TranslateResult {
   // null for levels not generated in single-level mode.
   v1: Version | null;
@@ -29,6 +34,8 @@ interface TranslateResult {
   truncated: boolean;
   /** Non-fatal parse/generation problems reported by the API. */
   warnings?: string[];
+  // Empty when generation failed — the quiz section simply doesn't render.
+  quiz: QuizQuestion[];
 }
 
 interface MicroTestResponse {
@@ -67,6 +74,26 @@ function getConsentServerSnapshot(): boolean | null {
 
 type Mode = "all" | "single";
 type Level = "primaria" | "secundaria" | "avanzado";
+
+// Perception survey (Part 2) — six questions, purely local state, no storage.
+type YesNo = "si" | "no";
+type YesMaybeNo = "si" | "tal_vez" | "no";
+interface SurveyAnswers {
+  q1: number | null;
+  q2: number | null;
+  q3: YesMaybeNo | null;
+  q4: YesNo | null;
+  q5: YesNo | null;
+  q6: YesNo | null;
+}
+const EMPTY_SURVEY: SurveyAnswers = {
+  q1: null,
+  q2: null,
+  q3: null,
+  q4: null,
+  q5: null,
+  q6: null,
+};
 
 const LEVEL_OPTIONS: Array<{ key: Level; label: string }> = [
   { key: "primaria", label: "Nivel Primaria" },
@@ -276,8 +303,9 @@ export default function Home() {
   const [q1, setQ1] = useState("");
   const [q2, setQ2] = useState<number | null>(null);
   const [q3, setQ3] = useState<number | null>(null);
-  const [funFact, setFunFact] = useState<FunFact | null>(null);
-  const inputSectionRef = useRef<HTMLElement | null>(null);
+  // Perception survey — shown after a translation result is available.
+  const [surveyAnswers, setSurveyAnswers] = useState<SurveyAnswers>(EMPTY_SURVEY);
+  const [surveySubmitted, setSurveySubmitted] = useState(false);
   const [mode, setMode] = useState<Mode>("all");
   const [selectedLevel, setSelectedLevel] = useState<Level>("secundaria");
   // Snapshot of mode/selectedLevel at the moment `result` was generated —
@@ -289,15 +317,6 @@ export default function Home() {
 
   const busy = status === "extracting" || status === "translating";
   const canTranslate = (!!file || url.trim().length > 0) && !busy;
-
-  // Fun facts card — pre-fill the URL input with the fact's source paper and
-  // scroll back up, rather than auto-triggering a translation mid-render.
-  function handleUseFunFactPaper(paperUrl: string) {
-    setFile(null);
-    setUrl(paperUrl);
-    setCharCount(null);
-    inputSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
 
   // Close the expanded reading view on ESC.
   useEffect(() => {
@@ -337,6 +356,8 @@ export default function Home() {
     setQ1("");
     setQ2(null);
     setQ3(null);
+    setSurveyAnswers(EMPTY_SURVEY);
+    setSurveySubmitted(false);
 
     try {
       // ---- 1. Obtain the paper text (PDF upload or URL) ----
@@ -400,7 +421,6 @@ export default function Home() {
       setResult(payload);
       setResultMode(mode);
       setResultLevel(selectedLevel);
-      setFunFact(randomFunFact());
       setStatus("done");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Algo salió mal.";
@@ -465,6 +485,11 @@ export default function Home() {
 
     console.log("MICRO_TEST_RESPONSE:", JSON.stringify(response));
     setMicroTestDone(true);
+  }
+
+  function handleSurveySubmit() {
+    if (Object.values(surveyAnswers).some((v) => v === null)) return;
+    setSurveySubmitted(true);
   }
 
   return (
@@ -557,10 +582,7 @@ export default function Home() {
         </section>
 
         {/* ---- Input section ---- */}
-        <section
-          ref={inputSectionRef}
-          className="mb-8 rounded-2xl border border-light-blue bg-light-blue p-6 shadow-sm"
-        >
+        <section className="mb-8 rounded-2xl border border-light-blue bg-light-blue p-6 shadow-sm">
           <div className="grid gap-6 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
             {/* PDF upload */}
             <div>
@@ -627,13 +649,16 @@ export default function Home() {
 
         {/* ---- Loading state ---- */}
         {busy && (
-          <div className="mb-8 flex items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white p-6 text-slate-600 shadow-sm">
-            <span className="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-slate-700" />
-            <span className="text-sm font-medium">
-              {status === "extracting"
-                ? "Extrayendo texto…"
-                : "Generando tres versiones…"}
-            </span>
+          <div className="mb-8 rounded-xl border border-light-blue bg-white p-6 shadow-sm">
+            <div className="flex items-center justify-center gap-3 text-text-primary">
+              <span className="h-5 w-5 animate-spin rounded-full border-2 border-light-blue border-t-primary-blue" />
+              <span className="text-sm font-medium">
+                Simplificando el artículo... esto puede tomar hasta 30 segundos
+              </span>
+            </div>
+            <div className="relative mt-4 h-2 w-full overflow-hidden rounded-full bg-light-blue">
+              <span className="animate-progress-indeterminate absolute inset-y-0 rounded-full bg-primary-blue" />
+            </div>
           </div>
         )}
 
@@ -812,6 +837,102 @@ export default function Home() {
           </section>
         )}
 
+        {/* ---- Perception survey (shown after a translation result is available) ---- */}
+        {result && (
+          <section className="mt-8 rounded-2xl border border-light-blue bg-white p-6 shadow-sm">
+            <h2 className="text-lg font-semibold text-primary-blue">
+              Cuéntanos tu experiencia
+            </h2>
+            <p className="mb-4 mt-1 text-sm text-text-primary">
+              Tus respuestas nos ayudan a mejorar la herramienta
+            </p>
+
+            {surveySubmitted ? (
+              <p className="text-sm font-semibold text-text-primary">
+                ¡Gracias por tu respuesta! Tus datos nos ayudan a mejorar el
+                acceso al conocimiento científico.
+              </p>
+            ) : (
+              <div className="space-y-6">
+                <RatingQuestion
+                  label="Después de leer esta versión, ¿qué tan interesado estás en aprender más sobre este tema?"
+                  lowLabel="Nada"
+                  midLabel="Algo"
+                  highLabel="Mucho"
+                  value={surveyAnswers.q1}
+                  onChange={(v) => setSurveyAnswers((s) => ({ ...s, q1: v }))}
+                />
+
+                <RatingQuestion
+                  label="¿Qué tan difícil te pareció entender el texto?"
+                  lowLabel="Nada"
+                  midLabel="Algo"
+                  highLabel="Mucho"
+                  value={surveyAnswers.q2}
+                  onChange={(v) => setSurveyAnswers((s) => ({ ...s, q2: v }))}
+                />
+
+                <ChoiceQuestion
+                  label="¿Usarías esta herramienta para leer otros artículos científicos por tu cuenta?"
+                  options={[
+                    { value: "si", label: "Sí" },
+                    { value: "tal_vez", label: "Tal vez" },
+                    { value: "no", label: "No" },
+                  ]}
+                  value={surveyAnswers.q3}
+                  onChange={(v) =>
+                    setSurveyAnswers((s) => ({ ...s, q3: v as YesMaybeNo }))
+                  }
+                />
+
+                <ChoiceQuestion
+                  label="¿La recomendarías a un compañero?"
+                  options={[
+                    { value: "si", label: "Sí" },
+                    { value: "no", label: "No" },
+                  ]}
+                  value={surveyAnswers.q4}
+                  onChange={(v) =>
+                    setSurveyAnswers((s) => ({ ...s, q4: v as YesNo }))
+                  }
+                />
+
+                <ChoiceQuestion
+                  label="¿Habías leído un artículo científico completo antes de hoy?"
+                  options={[
+                    { value: "si", label: "Sí" },
+                    { value: "no", label: "No" },
+                  ]}
+                  value={surveyAnswers.q5}
+                  onChange={(v) =>
+                    setSurveyAnswers((s) => ({ ...s, q5: v as YesNo }))
+                  }
+                />
+
+                <ChoiceQuestion
+                  label="¿Sientes que puedes aprender más usando Paper-to-Human?"
+                  options={[
+                    { value: "si", label: "Sí" },
+                    { value: "no", label: "No" },
+                  ]}
+                  value={surveyAnswers.q6}
+                  onChange={(v) =>
+                    setSurveyAnswers((s) => ({ ...s, q6: v as YesNo }))
+                  }
+                />
+
+                <button
+                  onClick={handleSurveySubmit}
+                  disabled={Object.values(surveyAnswers).some((v) => v === null)}
+                  className="rounded-lg bg-primary-blue px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-medium-blue disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  Enviar respuestas
+                </button>
+              </div>
+            )}
+          </section>
+        )}
+
         {/* ---- Micro-test (post-translation feedback) ---- */}
         {result && consent === true && (
           <section className="mt-8 rounded-2xl border border-light-blue bg-light-blue p-6 shadow-sm">
@@ -878,40 +999,6 @@ export default function Home() {
                 )}
               </>
             )}
-          </section>
-        )}
-
-        {/* ---- Fun fact card ---- */}
-        {result && funFact && (
-          <section className="mt-8 rounded-2xl border-l-4 border-yellow-accent bg-yellow-soft p-6 shadow-sm">
-            <div className="mb-2 flex items-center gap-2">
-              <span aria-hidden className="text-xl">💡</span>
-              <h2 className="text-base font-semibold text-medium-blue">
-                ¿Sabías que...?
-              </h2>
-            </div>
-            <p className="text-sm leading-relaxed text-text-primary">
-              {funFact.fact}
-            </p>
-            <span className="mt-3 inline-block rounded-full bg-light-blue px-2.5 py-1 text-xs font-semibold text-primary-blue">
-              {funFact.topic}
-            </span>
-            <div className="mt-4 flex flex-wrap items-center gap-4">
-              <a
-                href={funFact.paperUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm font-semibold text-medium-blue underline-offset-2 hover:underline"
-              >
-                Leer el paper original →
-              </a>
-              <button
-                onClick={() => handleUseFunFactPaper(funFact.paperUrl)}
-                className="rounded-lg bg-primary-blue px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-medium-blue"
-              >
-                Simplificar este paper
-              </button>
-            </div>
           </section>
         )}
 
@@ -1002,6 +1089,41 @@ function ModalSection({ title, body }: { title: string; body: string }) {
         {title}
       </h3>
       <p className="whitespace-pre-line">{body}</p>
+    </div>
+  );
+}
+
+function ChoiceQuestion({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: Array<{ value: string; label: string }>;
+  value: string | null;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div>
+      <p className="mb-2 text-sm font-medium text-text-primary">{label}</p>
+      <div className="flex flex-wrap gap-6">
+        {options.map((opt) => (
+          <label
+            key={opt.value}
+            className="flex items-center gap-2 text-sm text-text-primary"
+          >
+            <input
+              type="radio"
+              name={label}
+              checked={value === opt.value}
+              onChange={() => onChange(opt.value)}
+              className="h-4 w-4 border-light-blue text-primary-blue focus:ring-primary-blue"
+            />
+            {opt.label}
+          </label>
+        ))}
+      </div>
     </div>
   );
 }

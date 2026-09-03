@@ -157,3 +157,42 @@ PAPER TEXT:
 export function buildUserPrompt(template: string, text: string): string {
   return template.replace("{text}", text);
 }
+
+/**
+ * Quiz prompts — mini comprehension test (not part of the SPEC 4.3 archive).
+ * Output must be raw JSON only, since route.ts parses it directly with no
+ * markdown/prose to strip.
+ */
+export const QUIZ_SYSTEM_PROMPT = `You are a Spanish-language reading-comprehension quiz generator. You write
+fair, unambiguous multiple-choice questions strictly based on the text you
+are given. Never invent facts that are not in the text. Respond with ONLY
+raw JSON — no markdown, no code fences, no commentary, no preamble, no
+explanation of any kind.`;
+
+export const QUIZ_USER_PROMPT = `A partir del siguiente artículo académico, genera exactamente 3 preguntas
+de opción múltiple en español mexicano sobre el contenido del artículo,
+para evaluar qué tan bien lo entendió un lector.
+
+Responde ÚNICAMENTE con un arreglo JSON válido, sin texto antes ni después,
+sin markdown, sin backticks. El formato debe ser EXACTAMENTE:
+
+[
+  {
+    "question": "string",
+    "options": ["string", "string", "string", "string"],
+    "correctIndex": 0
+  },
+  ...
+]
+
+Reglas:
+- Exactamente 3 preguntas.
+- Cada pregunta debe tener exactamente 4 opciones.
+- "correctIndex" debe ser un entero entre 0 y 3 que indique la opción
+  correcta.
+- Las preguntas deben poder responderse solo con la información del
+  artículo.
+- No agregues explicaciones, notas, ni texto fuera del arreglo JSON.
+
+ARTÍCULO:
+{text}`;
