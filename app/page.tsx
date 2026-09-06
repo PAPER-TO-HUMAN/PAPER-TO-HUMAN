@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { buildExportFile, versionPlainText } from "@/app/lib/export";
+import { jakarta } from "@/app/fonts";
 
 // ---- Types (match the /api/translate payload confirmed in Session 1) ----
 interface Version {
@@ -236,6 +237,13 @@ const translations = {
       veryDifficult: "Muy difícil",
       noData: "Sin datos",
     },
+    fhDescriptions: {
+      veryEasy: "Accesible para cualquier lector",
+      easy: "Apto para estudiantes de primaria",
+      standard: "Nivel de secundaria",
+      difficult: "Requiere conocimiento previo del tema",
+      veryDifficult: "Nivel universitario o especializado",
+    },
     sectionTitles: { summary: "Resumen", concepts: "Conceptos clave", analogy: "Analogía" },
     expand: "Ampliar",
     close: "Cerrar",
@@ -452,6 +460,13 @@ const translations = {
       veryDifficult: "Very difficult",
       noData: "No data",
     },
+    fhDescriptions: {
+      veryEasy: "Accessible to any reader",
+      easy: "Suitable for elementary school students",
+      standard: "High school level",
+      difficult: "Requires prior knowledge of the topic",
+      veryDifficult: "University or specialized level",
+    },
     sectionTitles: { summary: "Summary", concepts: "Key Concepts", analogy: "Analogy" },
     expand: "Expand",
     close: "Close",
@@ -599,6 +614,17 @@ function fhLevel(score: number | null, t: UIText): string {
   if (score >= 50) return t.fhLevels.standard;
   if (score >= 30) return t.fhLevels.difficult;
   return t.fhLevels.veryDifficult;
+}
+
+// Plain-language gloss for the FH tier, shown under the badge. No gloss for
+// "no data" — there's nothing honest to say about a score that doesn't exist.
+function fhDescription(score: number | null, t: UIText): string {
+  if (score === null) return "";
+  if (score >= 90) return t.fhDescriptions.veryEasy;
+  if (score >= 70) return t.fhDescriptions.easy;
+  if (score >= 50) return t.fhDescriptions.standard;
+  if (score >= 30) return t.fhDescriptions.difficult;
+  return t.fhDescriptions.veryDifficult;
 }
 
 // Badge colors: blue scale for every tier except "Estándar", which is the
@@ -1024,7 +1050,7 @@ export default function Home() {
 
         {/* ---- Header ---- */}
         <header className="mb-8 text-center">
-          <h1 className="text-3xl font-bold tracking-tight text-primary-blue sm:text-4xl">
+          <h1 className={`${jakarta.className} text-3xl font-bold tracking-tight text-primary-blue sm:text-4xl`}>
             {t.appTitle}
           </h1>
           <p className="mt-2 text-base text-text-primary">{t.appSubtitle}</p>
@@ -1220,18 +1246,25 @@ export default function Home() {
                   key={col.key}
                   className={`flex flex-col rounded-2xl border border-light-blue bg-light-blue p-5 shadow-sm ${col.order}`}
                 >
-                  <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                  <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
                     <span className="rounded-full bg-primary-blue px-3 py-1 text-xs font-semibold text-white">
                       {col.label}
                     </span>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${fhBadgeClasses(
-                          metric.fh,
-                        )}`}
-                      >
-                        {fhLevel(metric.fh, t)}
-                      </span>
+                    <div className="flex items-start gap-2">
+                      <div className="flex flex-col items-end">
+                        <span
+                          className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${fhBadgeClasses(
+                            metric.fh,
+                          )}`}
+                        >
+                          {fhLevel(metric.fh, t)}
+                        </span>
+                        {fhDescription(metric.fh, t) && (
+                          <span className="mt-1 text-right text-[11px] italic text-slate-500">
+                            {fhDescription(metric.fh, t)}
+                          </span>
+                        )}
+                      </div>
                       <button
                         onClick={() => setExpandedKey(col.key)}
                         aria-label={t.expand}
@@ -1637,17 +1670,24 @@ export default function Home() {
                   ✕
                 </button>
 
-                <div className="mb-6 flex flex-wrap items-center gap-2">
+                <div className="mb-6 flex flex-wrap items-start gap-2">
                   <span className="rounded-full bg-primary-blue px-3 py-1 text-xs font-semibold text-white">
                     {col.label}
                   </span>
-                  <span
-                    className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${fhBadgeClasses(
-                      metric.fh,
-                    )}`}
-                  >
-                    {fhLevel(metric.fh, t)}
-                  </span>
+                  <div className="flex flex-col">
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${fhBadgeClasses(
+                        metric.fh,
+                      )}`}
+                    >
+                      {fhLevel(metric.fh, t)}
+                    </span>
+                    {fhDescription(metric.fh, t) && (
+                      <span className="mt-1 text-[11px] italic text-slate-500">
+                        {fhDescription(metric.fh, t)}
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 <div
@@ -1729,7 +1769,7 @@ function Section({ title, body }: { title: string; body: string }) {
   if (!body) return null;
   return (
     <div className="mb-4 last:mb-0">
-      <h3 className="mb-1 text-xs font-bold uppercase tracking-wide text-text-primary">
+      <h3 className={`${jakarta.className} mb-1 text-xs font-bold uppercase tracking-wide text-text-primary`}>
         {title}
       </h3>
       <p className="whitespace-pre-line text-sm leading-relaxed text-text-primary">
@@ -1743,7 +1783,7 @@ function ModalSection({ title, body }: { title: string; body: string }) {
   if (!body) return null;
   return (
     <div className="mb-6 last:mb-0">
-      <h3 className="mb-2 text-sm font-bold uppercase tracking-wide text-text-primary">
+      <h3 className={`${jakarta.className} mb-2 text-sm font-bold uppercase tracking-wide text-text-primary`}>
         {title}
       </h3>
       <p className="whitespace-pre-line">{body}</p>
