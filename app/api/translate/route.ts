@@ -302,6 +302,7 @@ export async function POST(req: Request) {
     source?: string;
     mode?: string;
     selectedLevel?: string;
+    language?: string;
   };
   try {
     body = await req.json();
@@ -315,6 +316,7 @@ export async function POST(req: Request) {
 
   const source = typeof body.source === "string" ? body.source : "unknown";
   let text = (typeof body.text === "string" ? body.text : "").trim();
+  const language: "en" | "es" = body.language === "en" ? "en" : "es";
 
   // Single-level selection mode (SPEC extension). "all" (or anything else,
   // including undefined) preserves the original three-version behavior.
@@ -365,7 +367,7 @@ export async function POST(req: Request) {
     (sum, [, template]) =>
       sum +
       estimateTokens(SYSTEM_PROMPT) +
-      estimateTokens(buildUserPrompt(template, text)),
+      estimateTokens(buildUserPrompt(template, text, language)),
     0,
   );
   if (totalTokens > MAX_TOTAL_TOKENS) {
@@ -383,12 +385,15 @@ export async function POST(req: Request) {
   async function generate(
     label: string,
     template: string,
+    language: "en" | "es",
   ): Promise<{ text: string; warnings: string[] }> {
     const message = await client.messages.create({
       model: MODEL,
       max_tokens: MAX_OUTPUT_TOKENS,
       system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: buildUserPrompt(template, text) }],
+      messages: [
+        { role: "user", content: buildUserPrompt(template, text, language) },
+      ],
     });
 
     const warnings: string[] = [];
@@ -412,19 +417,27 @@ export async function POST(req: Request) {
   }
 
   /**
-   * Generate the 3-question comprehension quiz. Best-effort: this is a bonus
-   * feature layered on top of the study's core translation output, so ANY
-   * failure (API error, unparsable JSON, wrong shape, out-of-range
+   * Generate the 3-question comprehension quiz FROM THE SIMPLIFIED TEXT the
+   * user actually reads (never the original paper) — otherwise the quiz can
+   * ask about details the simplification dropped. Best-effort: this is a
+   * bonus feature layered on top of the study's core translation output, so
+   * ANY failure (API error, unparsable JSON, wrong shape, out-of-range
    * correctIndex) degrades to an empty quiz instead of failing the request.
    */
-  async function generateQuiz(quizText: string): Promise<QuizQuestion[]> {
+  async function generateQuiz(
+    quizText: string,
+    language: "en" | "es",
+  ): Promise<QuizQuestion[]> {
     try {
       const message = await client.messages.create({
         model: MODEL,
         max_tokens: QUIZ_MAX_OUTPUT_TOKENS,
         system: QUIZ_SYSTEM_PROMPT,
         messages: [
-          { role: "user", content: buildUserPrompt(QUIZ_USER_PROMPT, quizText) },
+          {
+            role: "user",
+            content: buildUserPrompt(QUIZ_USER_PROMPT, quizText, language),
+          },
         ],
       });
 
@@ -465,18 +478,8 @@ export async function POST(req: Request) {
   // discards the other two responses even though they succeeded and were paid
   // for. Here only the failed version is retried — the two that succeeded are
   // kept, so a transient blip costs one extra call instead of three.
-  //
-  // The quiz call is started here too (not awaited yet) so it runs
-  // concurrently with the version calls. It is independent of VERSIONS/mode —
-  // one shared quiz regardless of single vs. all-levels — and never rejects
-  // (generateQuiz catches its own errors), but is still wrapped in
-  // Promise.allSettled for defense in depth.
-  const quizPromise = Promise.allSettled([generateQuiz(text)]).then(([r]) =>
-    r.status === "fulfilled" ? r.value : [],
-  );
-
   const settled = await Promise.allSettled(
-    VERSIONS.map(([label, template]) => generate(label, template)),
+    VERSIONS.map(([label, template]) => generate(label, template, language)),
   );
 
   const results = await Promise.all(
@@ -490,7 +493,7 @@ export async function POST(req: Request) {
       try {
         return {
           status: "fulfilled" as const,
-          value: await generate(label, template),
+          value: await generate(label, template, language),
         };
       } catch (err) {
         return { status: "rejected" as const, reason: err as unknown };
@@ -552,7 +555,14 @@ export async function POST(req: Request) {
     v3: v3 ? metricsFor(versionText(v3)) : null,
   };
 
-  const quiz = await quizPromise;
+  // Quiz is generated from the simplified text the user reads: the selected
+  // version in single mode, or v2/secundaria in all mode — never the
+  // original paper text.
+  const quizSource =
+    mode === "single" ? producedByLabel.get(LEVEL_TO_VERSION[selectedLevel]) : v2;
+  const quiz = quizSource
+    ? await generateQuiz(versionText(quizSource), language)
+    : [];
 
   return Response.json({ v1, v2, v3, metrics, source, truncated, warnings, quiz });
 }

@@ -24,6 +24,17 @@
  *     Version 2 prompts to raise Fernández-Huerta scores (V1 was scoring 43.0,
  *     target 70-90; V2 was scoring 49.9, target 55-70). V1 cap: 12 words/sentence.
  *     V2 cap: 18 words/sentence. No other content changed.
+ *   - 2026-09-05: QUIZ_USER_PROMPT now instructs the model to base questions
+ *     ONLY on the simplified text it is given (route.ts passes it the
+ *     generated version's text, not the original paper) and explicitly
+ *     forbids asking about information absent from that text. Previously the
+ *     prompt referred to "el artículo académico" and route.ts called it with
+ *     the raw uploaded text, so quiz questions could reference material the
+ *     simplified version omitted.
+ *   - 2026-09-05: buildUserPrompt() now accepts a `language` param (default
+ *     'es') and prepends an explicit output-language instruction before the
+ *     template's context block, applied to both the translate prompts and
+ *     QUIZ_USER_PROMPT. The archived V1/V2/V3 template text is unchanged.
  */
 
 /** System prompt — identical for all three versions (SPEC 4.3). */
@@ -149,13 +160,26 @@ REAL-WORLD ANALOGY
 PAPER TEXT:
 {text}`;
 
+/** Output-language instruction, prepended before the prompt's context block. */
+const LANGUAGE_INSTRUCTION: Record<"en" | "es", string> = {
+  en: `IMPORTANT: Write your entire response in English.
+All section headers and content must be in English:
+SUMMARY, KEY CONCEPTS, REAL-WORLD ANALOGY.`,
+  es: `IMPORTANTE: Escribe toda tu respuesta en español.
+Usa los encabezados: RESUMEN, CONCEPTOS CLAVE, ANALOGÍA.`,
+};
+
 /**
- * Insert the extracted paper text into a user prompt's `{text}` token.
- * Only the `{text}` placeholder is substituted — the prompt wording is
- * never altered.
+ * Insert the extracted paper text into a user prompt's `{text}` token and
+ * prepend the output-language instruction. Only the `{text}` placeholder is
+ * substituted — the prompt wording is never altered.
  */
-export function buildUserPrompt(template: string, text: string): string {
-  return template.replace("{text}", text);
+export function buildUserPrompt(
+  template: string,
+  text: string,
+  language: "en" | "es" = "es",
+): string {
+  return `${LANGUAGE_INSTRUCTION[language]}\n\n${template.replace("{text}", text)}`;
 }
 
 /**
@@ -169,9 +193,12 @@ are given. Never invent facts that are not in the text. Respond with ONLY
 raw JSON — no markdown, no code fences, no commentary, no preamble, no
 explanation of any kind.`;
 
-export const QUIZ_USER_PROMPT = `A partir del siguiente artículo académico, genera exactamente 3 preguntas
-de opción múltiple en español mexicano sobre el contenido del artículo,
-para evaluar qué tan bien lo entendió un lector.
+export const QUIZ_USER_PROMPT = `Generate 3 multiple choice questions based ONLY on the following
+simplified text. Do not ask about information not present in this text.
+
+Write the questions and options in Mexican Spanish (español mexicano),
+sobre el contenido del texto, para evaluar qué tan bien lo entendió un
+lector.
 
 Responde ÚNICAMENTE con un arreglo JSON válido, sin texto antes ni después,
 sin markdown, sin backticks. El formato debe ser EXACTAMENTE:
@@ -191,8 +218,8 @@ Reglas:
 - "correctIndex" debe ser un entero entre 0 y 3 que indique la opción
   correcta.
 - Las preguntas deben poder responderse solo con la información del
-  artículo.
+  texto simplificado a continuación.
 - No agregues explicaciones, notas, ni texto fuera del arreglo JSON.
 
-ARTÍCULO:
+SIMPLIFIED TEXT:
 {text}`;
