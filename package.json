@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
+    "@supabase/supabase-js": "^2.117.2",
     "next": "16.2.9",
     "pdf-parse": "^2.4.5",
     "pdfjs-dist": "^5.4.296",

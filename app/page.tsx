@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { supabase } from "@/app/lib/supabase";
 import { buildExportFile, versionPlainText } from "@/app/lib/export";
 import { jakarta } from "@/app/fonts";
 
@@ -745,6 +746,13 @@ export default function Home() {
   // the response to a level/mode the user never actually saw.
   const [resultMode, setResultMode] = useState<Mode>("all");
   const [resultLevel, setResultLevel] = useState<Level>("secundaria");
+  // Snapshot of the personalization answers used for this result — the form
+  // state itself is cleared when a new translation starts.
+  const [resultProfile, setResultProfile] = useState<{
+    familiarity: string | null;
+    purpose: string | null;
+    style: string | null;
+  }>({ familiarity: null, purpose: null, style: null });
   // Personalization form — must be fully answered before the upload section appears.
   const [familiarity, setFamiliarity] = useState<string | null>(null);
   const [purpose, setPurpose] = useState<string | null>(null);
@@ -911,6 +919,7 @@ export default function Home() {
       setResult(payload);
       setResultMode(mode);
       setResultLevel(selectedLevel);
+      setResultProfile({ familiarity, purpose, style });
       setStatus("done");
     } catch (err) {
       const msg = err instanceof Error ? err.message : t.genericError;
@@ -993,6 +1002,29 @@ export default function Home() {
   function handleQuizSubmit() {
     if (quizAnswers.some((a) => a === null)) return;
     setQuizSubmitted(true);
+
+    if (result) {
+      void supabase
+        .from("test_responses")
+        .insert([
+          {
+            paper_title: result.source,
+            paper_url: file ? null : url.trim() || null,
+            grade_level:
+              resultMode === "single"
+                ? resultLevel
+                : levelForVersionKey(selectedVersionKey()),
+            familiarity: resultProfile.familiarity,
+            purpose: resultProfile.purpose,
+            style: resultProfile.style,
+            score: quizScore(),
+            total_questions: result.quiz.length,
+          },
+        ])
+        .then(({ error }) => {
+          if (error) console.error("Error guardando respuesta:", error.message);
+        });
+    }
   }
 
   return (
