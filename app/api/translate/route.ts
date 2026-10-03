@@ -21,7 +21,7 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 // Model is fixed by the study (SPEC Section 3). Archived as study material.
-const MODEL = google("gemini-2.0-flash");
+const MODEL = google("gemini-2.5-flash");
 const MAX_CHARS = 12_000; // SPEC 4.1 — truncate extracted text before processing
 const MIN_CHARS = 200; // SPEC 7 — "Not enough text to process"
 const MAX_TOTAL_TOKENS = 15_000; // safety cap on total input tokens across all 3 prompts
