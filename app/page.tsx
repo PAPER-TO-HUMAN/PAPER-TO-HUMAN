@@ -15,6 +15,9 @@ interface Metric {
   /** null when the API could not score the text (e.g. empty model output). */
   fh: number | null;
 }
+// Must match QUIZ_SIZE in app/api/translate/route.ts and the quiz prompt.
+const QUIZ_SIZE = 5;
+
 interface QuizQuestion {
   question: string;
   options: string[];
@@ -270,7 +273,7 @@ const translations = {
       title: "¿Entendiste el artículo?",
       subtitle: "Responde estas preguntas sobre lo que acabas de leer",
       submit: "Enviar respuestas",
-      resultText: (score: number) => `Obtuviste ${score} de 3 respuestas correctas.`,
+      resultText: (score: number) => `Obtuviste ${score} de ${QUIZ_SIZE} respuestas correctas.`,
       recommendReread: "Te recomendamos releer el resumen.",
       goodJob: "¡Buen trabajo!",
     },
@@ -493,7 +496,7 @@ const translations = {
       title: "Did you understand the paper?",
       subtitle: "Answer these questions about what you just read",
       submit: "Submit answers",
-      resultText: (score: number) => `You got ${score} out of 3 correct.`,
+      resultText: (score: number) => `You got ${score} out of ${QUIZ_SIZE} correct.`,
       recommendReread: "We recommend re-reading the summary.",
       goodJob: "Great job!",
     },
@@ -732,11 +735,9 @@ export default function Home() {
   const [surveyAnswers, setSurveyAnswers] = useState<SurveyAnswers>(EMPTY_SURVEY);
   const [surveySubmitted, setSurveySubmitted] = useState(false);
   // Comprehension quiz — purely local state, nothing is sent anywhere.
-  const [quizAnswers, setQuizAnswers] = useState<(number | null)[]>([
-    null,
-    null,
-    null,
-  ]);
+  const [quizAnswers, setQuizAnswers] = useState<(number | null)[]>(
+    Array(QUIZ_SIZE).fill(null),
+  );
   const [quizSubmitted, setQuizSubmitted] = useState(false);
   const [mode, setMode] = useState<Mode>("all");
   const [selectedLevel, setSelectedLevel] = useState<Level>("secundaria");
@@ -808,7 +809,7 @@ export default function Home() {
     setQ3(null);
     setSurveyAnswers(EMPTY_SURVEY);
     setSurveySubmitted(false);
-    setQuizAnswers([null, null, null]);
+    setQuizAnswers(Array(QUIZ_SIZE).fill(null));
     setQuizSubmitted(false);
     setFamiliarity(null);
     setPurpose(null);
@@ -842,7 +843,7 @@ export default function Home() {
     setQ3(null);
     setSurveyAnswers(EMPTY_SURVEY);
     setSurveySubmitted(false);
-    setQuizAnswers([null, null, null]);
+    setQuizAnswers(Array(QUIZ_SIZE).fill(null));
     setQuizSubmitted(false);
     setFamiliarity(null);
     setPurpose(null);
@@ -1446,7 +1447,7 @@ export default function Home() {
 
         {/* ---- Comprehension quiz (SPEC extension) — based on the simplified
             text the user just read, never the original paper. ---- */}
-        {result && result.quiz.length === 3 && (
+        {result && result.quiz.length === QUIZ_SIZE && (
           <section className="animate-fade-in mt-8 rounded-2xl border border-light-blue bg-light-blue p-6 shadow-sm">
             <h2 className="text-lg font-semibold text-primary-blue">{t.quiz.title}</h2>
             <p className="mb-4 mt-1 text-sm text-text-primary">{t.quiz.subtitle}</p>
@@ -1495,7 +1496,7 @@ export default function Home() {
             {quizSubmitted ? (
               <p className="mt-6 text-sm font-semibold text-text-primary">
                 {t.quiz.resultText(quizScore())}{" "}
-                {quizScore() < 2 ? t.quiz.recommendReread : t.quiz.goodJob}
+                {quizScore() < Math.ceil(QUIZ_SIZE / 2) ? t.quiz.recommendReread : t.quiz.goodJob}
               </p>
             ) : (
               <button
@@ -1511,7 +1512,7 @@ export default function Home() {
 
         {/* ---- Perception survey (shown after a translation result is available,
             and after the quiz — when there is one — has been submitted) ---- */}
-        {result && (result.quiz.length !== 3 || quizSubmitted) && (
+        {result && (result.quiz.length !== QUIZ_SIZE || quizSubmitted) && (
           <section className="animate-fade-in mt-8 rounded-2xl border border-light-blue bg-white p-6 shadow-sm">
             <h2 className="text-lg font-semibold text-primary-blue">{t.survey.title}</h2>
             <p className="mb-4 mt-1 text-sm text-text-primary">{t.survey.subtitle}</p>

@@ -193,7 +193,7 @@ are given. Never invent facts that are not in the text. Respond with ONLY
 raw JSON — no markdown, no code fences, no commentary, no preamble, no
 explanation of any kind.`;
 
-export const QUIZ_USER_PROMPT = `Generate 3 multiple choice questions based ONLY on the following
+export const QUIZ_USER_PROMPT = `Generate 5 multiple choice questions based ONLY on the following
 simplified text. Do not ask about information not present in this text.
 
 Write the questions and options in Mexican Spanish (español mexicano),
@@ -213,7 +213,7 @@ sin markdown, sin backticks. El formato debe ser EXACTAMENTE:
 ]
 
 Reglas:
-- Exactamente 3 preguntas.
+- Exactamente 5 preguntas.
 - Cada pregunta debe tener exactamente 4 opciones.
 - "correctIndex" debe ser un entero entre 0 y 3 que indique la opción
   correcta.

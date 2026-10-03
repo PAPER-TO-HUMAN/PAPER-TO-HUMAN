@@ -31,8 +31,11 @@ const MAX_TOTAL_TOKENS = 15_000; // safety cap on total input tokens across all 
 // silently unparseable, so this is deliberately generous.
 const MAX_OUTPUT_TOKENS = 8_000;
 
-// 3 questions + 4 options each is short; generous headroom for Spanish text.
-const QUIZ_MAX_OUTPUT_TOKENS = 1_024;
+// 5 questions + 4 options each. Gemini 2.5+/3.x "thinking" tokens count against
+// maxOutputTokens, so a tight cap truncates the JSON mid-array and the quiz is
+// silently dropped — keep generous headroom.
+const QUIZ_SIZE = 5;
+const QUIZ_MAX_OUTPUT_TOKENS = 4_096;
 
 // Per-call ceiling, comfortably inside maxDuration so a stuck upstream call
 // surfaces as our own timeout message rather than the platform killing the
@@ -198,10 +201,17 @@ interface QuizQuestion {
   correctIndex: number;
 }
 
-/** Strip a ```json fence if the model wrapped its output despite instructions not to. */
+/**
+ * Extract the JSON payload from a model reply. Gemini often wraps JSON in a
+ * ```json ... ``` fence (sometimes with prose around it), so take the fence
+ * content wherever it appears; failing that, fall back to the outermost [...].
+ */
 function stripCodeFence(raw: string): string {
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(raw);
-  return fenced ? fenced[1] : raw;
+  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(raw);
+  if (fenced) return fenced[1].trim();
+  const start = raw.indexOf("[");
+  const end = raw.lastIndexOf("]");
+  return start !== -1 && end > start ? raw.slice(start, end + 1) : raw.trim();
 }
 
 /** Throws with a specific reason on any shape mismatch — caller degrades to []. */
@@ -233,10 +243,10 @@ function validateQuizItem(item: unknown, index: number): QuizQuestion {
   return { question, options: options as string[], correctIndex };
 }
 
-/** Validate the full parsed quiz payload: exactly 3 well-formed items. */
+/** Validate the full parsed quiz payload: exactly QUIZ_SIZE well-formed items. */
 function validateQuiz(parsed: unknown): QuizQuestion[] {
-  if (!Array.isArray(parsed) || parsed.length !== 3) {
-    throw new Error("quiz response is not an array of exactly 3 items");
+  if (!Array.isArray(parsed) || parsed.length !== QUIZ_SIZE) {
+    throw new Error(`quiz response is not an array of exactly ${QUIZ_SIZE} items`);
   }
   return parsed.map((item, i) => validateQuizItem(item, i));
 }
@@ -434,6 +444,7 @@ export async function POST(req: Request) {
     quizText: string,
     language: "en" | "es",
   ): Promise<QuizQuestion[]> {
+    let raw = "";
     try {
       const result = await generateText({
         model: MODEL,
@@ -443,12 +454,14 @@ export async function POST(req: Request) {
         abortSignal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
       });
 
-      const raw = result.text.trim();
+      raw = result.text.trim();
 
       const parsed: unknown = JSON.parse(stripCodeFence(raw));
       return validateQuiz(parsed);
     } catch (err) {
-      console.warn("Quiz generation failed, degrading to empty quiz:", err);
+      console.warn("Quiz generation failed, degrading to empty quiz:", err, {
+        rawResponse: raw.slice(0, 2_000),
+      });
       return [];
     }
   }
