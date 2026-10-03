@@ -29,7 +29,7 @@ const MAX_TOTAL_TOKENS = 15_000; // safety cap on total input tokens across all 
 // Output cap per version. The three sections total ~450 words of Spanish, but
 // Spanish tokenizes less densely than English and a truncated response is
 // silently unparseable, so this is deliberately generous.
-const MAX_OUTPUT_TOKENS = 4_000;
+const MAX_OUTPUT_TOKENS = 8_000;
 
 // 3 questions + 4 options each is short; generous headroom for Spanish text.
 const QUIZ_MAX_OUTPUT_TOKENS = 1_024;
