@@ -33,9 +33,12 @@ const MAX_OUTPUT_TOKENS = 8_000;
 
 // 5 questions + 4 options each. Gemini 2.5+/3.x "thinking" tokens count against
 // maxOutputTokens, so a tight cap truncates the JSON mid-array and the quiz is
-// silently dropped — keep generous headroom.
+// silently dropped — keep generous headroom. 6,144 (up from 4,096): the new
+// per-question "explanation" adds roughly 5 x 60 = 300 visible tokens on top of
+// ~1,000 for the questions/options, and the extra ~2,000 keeps the same
+// thinking-token headroom as before without approaching MAX_OUTPUT_TOKENS.
 const QUIZ_SIZE = 5;
-const QUIZ_MAX_OUTPUT_TOKENS = 4_096;
+const QUIZ_MAX_OUTPUT_TOKENS = 6_144;
 
 // Per-call ceiling, comfortably inside maxDuration so a stuck upstream call
 // surfaces as our own timeout message rather than the platform killing the
@@ -199,6 +202,7 @@ interface QuizQuestion {
   question: string;
   options: string[];
   correctIndex: number;
+  explanation: string;
 }
 
 /**
@@ -219,7 +223,7 @@ function validateQuizItem(item: unknown, index: number): QuizQuestion {
   if (typeof item !== "object" || item === null) {
     throw new Error(`quiz item ${index} is not an object`);
   }
-  const { question, options, correctIndex } = item as Record<string, unknown>;
+  const { question, options, correctIndex, explanation } = item as Record<string, unknown>;
 
   if (typeof question !== "string" || !question.trim()) {
     throw new Error(`quiz item ${index} has an invalid question`);
@@ -240,7 +244,11 @@ function validateQuizItem(item: unknown, index: number): QuizQuestion {
     throw new Error(`quiz item ${index} has an invalid correctIndex`);
   }
 
-  return { question, options: options as string[], correctIndex };
+  if (typeof explanation !== "string" || !explanation.trim()) {
+    throw new Error(`quiz item ${index} has an invalid explanation`);
+  }
+
+  return { question, options: options as string[], correctIndex, explanation };
 }
 
 /** Validate the full parsed quiz payload: exactly QUIZ_SIZE well-formed items. */

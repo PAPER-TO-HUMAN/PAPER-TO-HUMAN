@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { supabase } from "@/app/lib/supabase";
 import { buildExportFile, versionPlainText } from "@/app/lib/export";
 import { jakarta } from "@/app/fonts";
+import { library, type LibraryArticle } from "@/app/lib/library";
 
 // ---- Types (match the /api/translate payload confirmed in Session 1) ----
 interface Version {
@@ -22,6 +23,7 @@ interface QuizQuestion {
   question: string;
   options: string[];
   correctIndex: number;
+  explanation: string;
 }
 
 interface TranslateResult {
@@ -80,6 +82,7 @@ function getConsentServerSnapshot(): boolean | null {
 type Mode = "all" | "single";
 type Level = "primaria" | "secundaria" | "avanzado";
 type Language = "es" | "en";
+type TabKey = "translate" | "library";
 
 // Perception survey (Part 2) — six questions, purely local state, no storage.
 type YesNo = "si" | "no";
@@ -128,6 +131,29 @@ const translations = {
   es: {
     appTitle: "Paper-to-Human",
     appSubtitle: "Traduce un artículo académico en tres niveles de lectura.",
+    tabs: {
+      label: "Secciones",
+      translate: "Traducir mi paper",
+      library: "Biblioteca",
+    },
+    library: {
+      title: "Biblioteca de artículos",
+      subtitle:
+        "Artículos científicos de acceso abierto ya explicados en tres niveles de lectura. El contenido de la biblioteca está en español.",
+      filterLabel: "Filtrar por disciplina",
+      all: "Todas",
+      count: (n: number) => (n === 1 ? "1 artículo" : `${n} artículos`),
+      originalLanguage: "Idioma original",
+      languageNames: { es: "ES", en: "EN" },
+      read: "Leer versiones",
+      viewOriginal: "Ver artículo original",
+      newTab: "(se abre en una pestaña nueva)",
+      license: "Licencia",
+      back: "Volver a la lista",
+      levelLabel: "Nivel de lectura",
+      originalTitle: "Título original",
+      source: "Fuente",
+    },
     consent: {
       message:
         "Al usar Paper-to-Human, tus respuestas de comprensión pueden usarse de forma anónima para investigación educativa.",
@@ -276,6 +302,11 @@ const translations = {
       resultText: (score: number) => `Obtuviste ${score} de ${QUIZ_SIZE} respuestas correctas.`,
       recommendReread: "Te recomendamos releer el resumen.",
       goodJob: "¡Buen trabajo!",
+      correct: "Correcto",
+      incorrect: "Incorrecto",
+      explanation: "Explicación",
+      correctOption: "Respuesta correcta",
+      yourAnswer: "Tu respuesta",
     },
     survey: {
       title: "Cuéntanos tu experiencia",
@@ -351,6 +382,29 @@ const translations = {
   en: {
     appTitle: "Paper-to-Human",
     appSubtitle: "Translate an academic paper into three reading levels.",
+    tabs: {
+      label: "Sections",
+      translate: "Translate my paper",
+      library: "Library",
+    },
+    library: {
+      title: "Article library",
+      subtitle:
+        "Open access scientific papers already explained at three reading levels. The library content is in Spanish.",
+      filterLabel: "Filter by discipline",
+      all: "All",
+      count: (n: number) => (n === 1 ? "1 article" : `${n} articles`),
+      originalLanguage: "Original language",
+      languageNames: { es: "ES", en: "EN" },
+      read: "Read versions",
+      viewOriginal: "View original article",
+      newTab: "(opens in a new tab)",
+      license: "License",
+      back: "Back to the list",
+      levelLabel: "Reading level",
+      originalTitle: "Original title",
+      source: "Source",
+    },
     consent: {
       message:
         "By using Paper-to-Human, your comprehension answers may be used anonymously for educational research.",
@@ -499,6 +553,11 @@ const translations = {
       resultText: (score: number) => `You got ${score} out of ${QUIZ_SIZE} correct.`,
       recommendReread: "We recommend re-reading the summary.",
       goodJob: "Great job!",
+      correct: "Correct",
+      incorrect: "Incorrect",
+      explanation: "Explanation",
+      correctOption: "Correct answer",
+      yourAnswer: "Your answer",
     },
     survey: {
       title: "Tell us about your experience",
@@ -710,6 +769,7 @@ async function extractPdfText(file: File, t: UIText): Promise<string> {
 
 export default function Home() {
   const [language, setLanguage] = useState<Language>("es");
+  const [tab, setTab] = useState<TabKey>("translate");
   const t = translations[language];
 
   const [url, setUrl] = useState("");
@@ -782,6 +842,13 @@ export default function Home() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [expandedKey]);
+
+  function handleTabChange(next: TabKey) {
+    // The expanded reading modal belongs to the translate tab; nothing else is
+    // touched, so the result and every answer survive a tab switch.
+    setExpandedKey(null);
+    setTab(next);
+  }
 
   function handleConsent(value: boolean) {
     localStorage.setItem("consent", value ? "true" : "false");
@@ -1020,6 +1087,7 @@ export default function Home() {
             style: resultProfile.style,
             score: quizScore(),
             total_questions: result.quiz.length,
+            source: "own",
           },
         ])
         .then(({ error }) => {
@@ -1089,6 +1157,17 @@ export default function Home() {
           <p className="mt-2 text-base text-text-primary">{t.appSubtitle}</p>
         </header>
 
+        {/* ---- Tab bar ---- */}
+        <TabBar tab={tab} onChange={handleTabChange} t={t} />
+
+        {/* Both panels stay mounted (the inactive one is just hidden) so
+            switching tabs never discards a translation result or answers. */}
+        <div
+          role="tabpanel"
+          id="panel-translate"
+          aria-labelledby="tab-translate"
+          hidden={tab !== "translate"}
+        >
         {/* ---- Step indicator ---- */}
         <StepIndicator step={currentStep} labels={t.steps} />
 
@@ -1448,160 +1527,26 @@ export default function Home() {
         {/* ---- Comprehension quiz (SPEC extension) — based on the simplified
             text the user just read, never the original paper. ---- */}
         {result && result.quiz.length === QUIZ_SIZE && (
-          <section className="animate-fade-in mt-8 rounded-2xl border border-light-blue bg-light-blue p-6 shadow-sm">
-            <h2 className="text-lg font-semibold text-primary-blue">{t.quiz.title}</h2>
-            <p className="mb-4 mt-1 text-sm text-text-primary">{t.quiz.subtitle}</p>
-
-            <div className="space-y-6">
-              {result.quiz.map((q, qi) => (
-                <div
-                  key={qi}
-                  className="animate-fade-in"
-                  style={{
-                    animationDelay: `${qi * 100}ms`,
-                    animationFillMode: "backwards",
-                  }}
-                >
-                  <p className="mb-2 text-sm font-medium text-text-primary">
-                    {qi + 1}. {q.question}
-                  </p>
-                  <div className="flex flex-col gap-2">
-                    {q.options.map((opt, oi) => (
-                      <label
-                        key={oi}
-                        className="flex items-center gap-2 text-sm text-text-primary"
-                      >
-                        <input
-                          type="radio"
-                          name={`quiz-${qi}`}
-                          checked={quizAnswers[qi] === oi}
-                          disabled={quizSubmitted}
-                          onChange={() =>
-                            setQuizAnswers((a) => {
-                              const next = [...a];
-                              next[qi] = oi;
-                              return next;
-                            })
-                          }
-                          className="h-4 w-4 border-light-blue text-primary-blue focus:ring-primary-blue"
-                        />
-                        {opt}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {quizSubmitted ? (
-              <p className="mt-6 text-sm font-semibold text-text-primary">
-                {t.quiz.resultText(quizScore())}{" "}
-                {quizScore() < Math.ceil(QUIZ_SIZE / 2) ? t.quiz.recommendReread : t.quiz.goodJob}
-              </p>
-            ) : (
-              <button
-                onClick={handleQuizSubmit}
-                disabled={quizAnswers.some((a) => a === null)}
-                className="mt-6 rounded-lg bg-primary-blue px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-medium-blue disabled:cursor-not-allowed disabled:bg-slate-300"
-              >
-                {t.quiz.submit}
-              </button>
-            )}
-          </section>
+          <QuizSection
+            questions={result.quiz}
+            answers={quizAnswers}
+            setAnswers={setQuizAnswers}
+            submitted={quizSubmitted}
+            onSubmit={handleQuizSubmit}
+            t={t}
+          />
         )}
 
         {/* ---- Perception survey (shown after a translation result is available,
             and after the quiz — when there is one — has been submitted) ---- */}
         {result && (result.quiz.length !== QUIZ_SIZE || quizSubmitted) && (
-          <section className="animate-fade-in mt-8 rounded-2xl border border-light-blue bg-white p-6 shadow-sm">
-            <h2 className="text-lg font-semibold text-primary-blue">{t.survey.title}</h2>
-            <p className="mb-4 mt-1 text-sm text-text-primary">{t.survey.subtitle}</p>
-
-            {!surveySubmitted && (
-              <p
-                className={`mb-4 text-xs font-semibold transition-colors duration-300 ${
-                  Object.values(surveyAnswers).filter((v) => v !== null)
-                    .length === 6
-                    ? "text-primary-blue"
-                    : "text-text-primary/60"
-                }`}
-              >
-                {t.survey.progress(
-                  Object.values(surveyAnswers).filter((v) => v !== null).length,
-                )}
-              </p>
-            )}
-
-            {surveySubmitted ? (
-              <p className="text-sm font-semibold text-text-primary">
-                {t.survey.thankYou}
-              </p>
-            ) : (
-              <div className="space-y-6">
-                <RatingQuestion
-                  label={t.survey.q1.label}
-                  lowLabel={t.survey.q1.low}
-                  midLabel={t.survey.q1.mid}
-                  highLabel={t.survey.q1.high}
-                  value={surveyAnswers.q1}
-                  onChange={(v) => setSurveyAnswers((s) => ({ ...s, q1: v }))}
-                />
-
-                <RatingQuestion
-                  label={t.survey.q2.label}
-                  lowLabel={t.survey.q2.low}
-                  midLabel={t.survey.q2.mid}
-                  highLabel={t.survey.q2.high}
-                  value={surveyAnswers.q2}
-                  onChange={(v) => setSurveyAnswers((s) => ({ ...s, q2: v }))}
-                />
-
-                <ChoiceQuestion
-                  label={t.survey.q3.label}
-                  options={t.survey.q3.options}
-                  value={surveyAnswers.q3}
-                  onChange={(v) =>
-                    setSurveyAnswers((s) => ({ ...s, q3: v as YesMaybeNo }))
-                  }
-                />
-
-                <ChoiceQuestion
-                  label={t.survey.q4.label}
-                  options={t.survey.q4.options}
-                  value={surveyAnswers.q4}
-                  onChange={(v) =>
-                    setSurveyAnswers((s) => ({ ...s, q4: v as YesNo }))
-                  }
-                />
-
-                <ChoiceQuestion
-                  label={t.survey.q5.label}
-                  options={t.survey.q5.options}
-                  value={surveyAnswers.q5}
-                  onChange={(v) =>
-                    setSurveyAnswers((s) => ({ ...s, q5: v as YesNo }))
-                  }
-                />
-
-                <ChoiceQuestion
-                  label={t.survey.q6.label}
-                  options={t.survey.q6.options}
-                  value={surveyAnswers.q6}
-                  onChange={(v) =>
-                    setSurveyAnswers((s) => ({ ...s, q6: v as YesNo }))
-                  }
-                />
-
-                <button
-                  onClick={handleSurveySubmit}
-                  disabled={Object.values(surveyAnswers).some((v) => v === null)}
-                  className="rounded-lg bg-primary-blue px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-medium-blue disabled:cursor-not-allowed disabled:bg-slate-300"
-                >
-                  {t.survey.submit}
-                </button>
-              </div>
-            )}
-          </section>
+          <SurveySection
+            answers={surveyAnswers}
+            setAnswers={setSurveyAnswers}
+            submitted={surveySubmitted}
+            onSubmit={handleSurveySubmit}
+            t={t}
+          />
         )}
 
         {/* ---- Micro-test (post-translation feedback) ---- */}
@@ -1669,6 +1614,17 @@ export default function Home() {
             )}
           </section>
         )}
+
+        </div>
+
+        <div
+          role="tabpanel"
+          id="panel-library"
+          aria-labelledby="tab-library"
+          hidden={tab !== "library"}
+        >
+          <LibraryTab t={t} language={language} />
+        </div>
 
         {/* ---- Footer (SPEC 5.3) ---- */}
         <footer className="mt-12 border-t border-slate-200 pt-6 text-center text-xs leading-relaxed text-text-primary">
@@ -1906,6 +1862,594 @@ function RatingQuestion({
         <span>3 = {midLabel}</span>
         <span>5 = {highLabel}</span>
       </div>
+    </div>
+  );
+}
+
+// Comprehension quiz, shared by "Traducir mi paper" and the library. Answered
+// questions are locked and get per-question feedback with the explanation.
+function QuizSection({
+  questions,
+  answers,
+  setAnswers,
+  submitted,
+  onSubmit,
+  t,
+}: {
+  questions: QuizQuestion[];
+  answers: (number | null)[];
+  setAnswers: React.Dispatch<React.SetStateAction<(number | null)[]>>;
+  submitted: boolean;
+  onSubmit: () => void;
+  t: UIText;
+}) {
+  const score = questions.reduce(
+    (n, q, i) => (answers[i] === q.correctIndex ? n + 1 : n),
+    0,
+  );
+  return (
+    <section className="animate-fade-in mt-8 rounded-2xl border border-light-blue bg-light-blue p-6 shadow-sm print:break-inside-avoid">
+      <h2 className="text-lg font-semibold text-primary-blue">{t.quiz.title}</h2>
+      <p className="mb-4 mt-1 text-sm text-text-primary">{t.quiz.subtitle}</p>
+
+      <div className="space-y-6">
+        {questions.map((q, qi) => (
+          <div
+            key={qi}
+            className="animate-fade-in"
+            style={{
+              animationDelay: `${qi * 100}ms`,
+              animationFillMode: "backwards",
+            }}
+          >
+            <p className="mb-2 text-sm font-medium text-text-primary">
+              {qi + 1}. {q.question}
+            </p>
+            <div className="flex flex-col gap-2">
+              {q.options.map((opt, oi) => {
+                const answered = answers[qi] !== null;
+                const isChosen = answers[qi] === oi;
+                const isCorrect = q.correctIndex === oi;
+                // Answered questions are locked; the correct and chosen
+                // options get a text tag too, so it reads in B/W print.
+                const tone = !answered
+                  ? ""
+                  : isCorrect
+                    ? "border-2 border-green-700 bg-green-50 font-semibold"
+                    : isChosen
+                      ? "border-2 border-dashed border-red-700 bg-red-50"
+                      : "opacity-70";
+                return (
+                  <label
+                    key={oi}
+                    className={`flex items-center gap-2 rounded-lg px-2 py-1 text-sm text-text-primary ${tone}`}
+                  >
+                    <input
+                      type="radio"
+                      name={`quiz-${qi}`}
+                      checked={isChosen}
+                      disabled={answered}
+                      onChange={() =>
+                        setAnswers((a) => {
+                          if (a[qi] !== null) return a;
+                          const next = [...a];
+                          next[qi] = oi;
+                          return next;
+                        })
+                      }
+                      className="h-4 w-4 border-light-blue text-primary-blue focus:ring-primary-blue"
+                    />
+                    <span>
+                      {opt}
+                      {answered && isCorrect && (
+                        <span className="ml-2 font-bold text-green-800">
+                          ✓ {t.quiz.correctOption}
+                        </span>
+                      )}
+                      {answered && isChosen && !isCorrect && (
+                        <span className="ml-2 font-bold text-red-800">
+                          ✗ {t.quiz.yourAnswer}
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <div aria-live="polite">
+              {answers[qi] !== null && (
+                <div
+                  className={`mt-2 rounded-lg border-l-4 px-3 py-2 text-sm text-text-primary ${
+                    answers[qi] === q.correctIndex
+                      ? "border-green-700 bg-green-50"
+                      : "border-red-700 bg-red-50"
+                  }`}
+                >
+                  <p
+                    className={`font-bold ${
+                      answers[qi] === q.correctIndex ? "text-green-800" : "text-red-800"
+                    }`}
+                  >
+                    {answers[qi] === q.correctIndex
+                      ? `✓ ${t.quiz.correct}`
+                      : `✗ ${t.quiz.incorrect}`}
+                  </p>
+                  <p className="mt-1">
+                    <span className="font-semibold">{t.quiz.explanation}:</span>{" "}
+                    {q.explanation}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {submitted ? (
+        <p className="mt-6 text-sm font-semibold text-text-primary">
+          {t.quiz.resultText(score)}{" "}
+          {score < Math.ceil(QUIZ_SIZE / 2) ? t.quiz.recommendReread : t.quiz.goodJob}
+        </p>
+      ) : (
+        <button
+          onClick={onSubmit}
+          disabled={answers.some((a) => a === null)}
+          className="mt-6 rounded-lg bg-primary-blue px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-medium-blue disabled:cursor-not-allowed disabled:bg-slate-300 print:hidden"
+        >
+          {t.quiz.submit}
+        </button>
+      )}
+    </section>
+  );
+}
+
+// Six-question perception survey, shared by both tabs (each keeps its own state).
+function SurveySection({
+  answers,
+  setAnswers,
+  submitted,
+  onSubmit,
+  t,
+}: {
+  answers: SurveyAnswers;
+  setAnswers: React.Dispatch<React.SetStateAction<SurveyAnswers>>;
+  submitted: boolean;
+  onSubmit: () => void;
+  t: UIText;
+}) {
+  const answeredCount = Object.values(answers).filter((v) => v !== null).length;
+  return (
+    <section className="animate-fade-in mt-8 rounded-2xl border border-light-blue bg-white p-6 shadow-sm print:break-inside-avoid">
+      <h2 className="text-lg font-semibold text-primary-blue">{t.survey.title}</h2>
+      <p className="mb-4 mt-1 text-sm text-text-primary">{t.survey.subtitle}</p>
+
+      {!submitted && (
+        <p
+          className={`mb-4 text-xs font-semibold transition-colors duration-300 ${
+            answeredCount === 6 ? "text-primary-blue" : "text-text-primary/60"
+          }`}
+        >
+          {t.survey.progress(answeredCount)}
+        </p>
+      )}
+
+      {submitted ? (
+        <p className="text-sm font-semibold text-text-primary">{t.survey.thankYou}</p>
+      ) : (
+        <div className="space-y-6">
+          <RatingQuestion
+            label={t.survey.q1.label}
+            lowLabel={t.survey.q1.low}
+            midLabel={t.survey.q1.mid}
+            highLabel={t.survey.q1.high}
+            value={answers.q1}
+            onChange={(v) => setAnswers((s) => ({ ...s, q1: v }))}
+          />
+
+          <RatingQuestion
+            label={t.survey.q2.label}
+            lowLabel={t.survey.q2.low}
+            midLabel={t.survey.q2.mid}
+            highLabel={t.survey.q2.high}
+            value={answers.q2}
+            onChange={(v) => setAnswers((s) => ({ ...s, q2: v }))}
+          />
+
+          <ChoiceQuestion
+            label={t.survey.q3.label}
+            options={t.survey.q3.options}
+            value={answers.q3}
+            onChange={(v) => setAnswers((s) => ({ ...s, q3: v as YesMaybeNo }))}
+          />
+
+          <ChoiceQuestion
+            label={t.survey.q4.label}
+            options={t.survey.q4.options}
+            value={answers.q4}
+            onChange={(v) => setAnswers((s) => ({ ...s, q4: v as YesNo }))}
+          />
+
+          <ChoiceQuestion
+            label={t.survey.q5.label}
+            options={t.survey.q5.options}
+            value={answers.q5}
+            onChange={(v) => setAnswers((s) => ({ ...s, q5: v as YesNo }))}
+          />
+
+          <ChoiceQuestion
+            label={t.survey.q6.label}
+            options={t.survey.q6.options}
+            value={answers.q6}
+            onChange={(v) => setAnswers((s) => ({ ...s, q6: v as YesNo }))}
+          />
+
+          <button
+            onClick={onSubmit}
+            disabled={Object.values(answers).some((v) => v === null)}
+            className="rounded-lg bg-primary-blue px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-medium-blue disabled:cursor-not-allowed disabled:bg-slate-300 print:hidden"
+          >
+            {t.survey.submit}
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// Accessible tab bar: roving tabindex, arrow keys / Home / End move and activate.
+function TabBar({
+  tab,
+  onChange,
+  t,
+}: {
+  tab: TabKey;
+  onChange: (next: TabKey) => void;
+  t: UIText;
+}) {
+  const tabs: Array<{ key: TabKey; label: string }> = [
+    { key: "translate", label: t.tabs.translate },
+    { key: "library", label: t.tabs.library },
+  ];
+  const refs = useRef<Record<TabKey, HTMLButtonElement | null>>({
+    translate: null,
+    library: null,
+  });
+
+  function onKeyDown(e: React.KeyboardEvent, i: number) {
+    let next = -1;
+    if (e.key === "ArrowRight") next = (i + 1) % tabs.length;
+    else if (e.key === "ArrowLeft") next = (i - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = tabs.length - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    onChange(tabs[next].key);
+    refs.current[tabs[next].key]?.focus();
+  }
+
+  return (
+    <div
+      role="tablist"
+      aria-label={t.tabs.label}
+      className="mb-8 flex justify-center gap-2 border-b border-light-blue print:hidden"
+    >
+      {tabs.map((item, i) => {
+        const selected = tab === item.key;
+        return (
+          <button
+            key={item.key}
+            ref={(el) => {
+              refs.current[item.key] = el;
+            }}
+            type="button"
+            role="tab"
+            id={`tab-${item.key}`}
+            aria-selected={selected}
+            aria-controls={`panel-${item.key}`}
+            tabIndex={selected ? 0 : -1}
+            onClick={() => onChange(item.key)}
+            onKeyDown={(e) => onKeyDown(e, i)}
+            className={`-mb-px border-b-2 px-5 py-2.5 text-sm font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-blue ${
+              selected
+                ? "border-primary-blue text-primary-blue"
+                : "border-transparent text-text-primary/60 hover:text-text-primary"
+            }`}
+          >
+            {item.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Library tab. Everything comes from the static JSON; no API calls.
+function LibraryTab({ t, language }: { t: UIText; language: Language }) {
+  const L = t.library;
+  const [discipline, setDiscipline] = useState<string>("all");
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [level, setLevel] = useState<Level>("secundaria");
+  const [quizAnswers, setQuizAnswers] = useState<(number | null)[]>(
+    Array(QUIZ_SIZE).fill(null),
+  );
+  const [quizSubmitted, setQuizSubmitted] = useState(false);
+  const [surveyAnswers, setSurveyAnswers] = useState<SurveyAnswers>(EMPTY_SURVEY);
+  const [surveySubmitted, setSurveySubmitted] = useState(false);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+
+  const disciplineName = (id: string) => {
+    const d = library.disciplines.find((x) => x.id === id);
+    return d ? d[language] : id;
+  };
+  const article: LibraryArticle | null =
+    library.articles.find((a) => a.id === openId) ?? null;
+  const visible = library.articles.filter(
+    (a) => discipline === "all" || a.discipline === discipline,
+  );
+  const chips = [
+    { id: "all", label: L.all },
+    ...library.disciplines.map((d) => ({ id: d.id, label: d[language] })),
+  ];
+
+  useEffect(() => {
+    if (openId) headingRef.current?.focus();
+  }, [openId]);
+
+  function resetAssessment() {
+    setQuizAnswers(Array(QUIZ_SIZE).fill(null));
+    setQuizSubmitted(false);
+    setSurveyAnswers(EMPTY_SURVEY);
+    setSurveySubmitted(false);
+  }
+
+  function openArticle(id: string) {
+    resetAssessment();
+    setOpenId(id);
+  }
+
+  function changeLevel(next: Level) {
+    if (next === level) return;
+    resetAssessment();
+    setLevel(next);
+  }
+
+  function handleQuizSubmit() {
+    if (!article || quizAnswers.some((a) => a === null)) return;
+    setQuizSubmitted(true);
+
+    const score = article.quiz.reduce(
+      (n, q, i) => (quizAnswers[i] === q.correctIndex ? n + 1 : n),
+      0,
+    );
+    void supabase
+      .from("test_responses")
+      .insert([
+        {
+          paper_title: article.titleEs,
+          paper_url: article.url,
+          grade_level: level,
+          // The library has no personalization form, so these stay null.
+          familiarity: null,
+          purpose: null,
+          style: null,
+          score,
+          total_questions: article.quiz.length,
+          source: "library",
+          library_id: article.id,
+        },
+      ])
+      .then(({ error }) => {
+        if (error) console.error("Error guardando respuesta:", error.message);
+      });
+  }
+
+  function handleSurveySubmit() {
+    if (Object.values(surveyAnswers).some((v) => v === null)) return;
+    setSurveySubmitted(true);
+  }
+
+  const originalLink = (a: LibraryArticle, className: string) => (
+    <a href={a.url} target="_blank" rel="noopener noreferrer" className={className}>
+      {L.viewOriginal}
+      <span className="sr-only"> {L.newTab}</span>
+      <span aria-hidden="true"> ↗</span>
+    </a>
+  );
+
+  // ---- Detail view ----
+  if (article) {
+    const version = article.versions[level];
+    const fh = article.metrics[level];
+    return (
+      <div>
+        <button
+          type="button"
+          onClick={() => setOpenId(null)}
+          className="mb-4 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-text-primary transition hover:bg-slate-100 print:hidden"
+        >
+          ← {L.back}
+        </button>
+
+        <header className="mb-6">
+          <h2
+            ref={headingRef}
+            tabIndex={-1}
+            className={`${jakarta.className} text-2xl font-bold text-primary-blue focus:outline-none`}
+          >
+            {article.titleEs}
+          </h2>
+          <p className="mt-1 text-sm text-text-primary">
+            {article.authors} · {article.year} · {article.journal}
+          </p>
+          <p className="mt-1 text-xs text-text-primary/70">
+            {L.originalTitle}: <span lang={article.language}>{article.title}</span>
+          </p>
+          <p className="mt-1 text-xs text-text-primary/70">
+            {disciplineName(article.discipline)} · {L.originalLanguage}:{" "}
+            {L.languageNames[article.language]} · {L.license}: {article.license}
+          </p>
+        </header>
+
+        <div
+          role="group"
+          aria-label={L.levelLabel}
+          className="mb-6 flex flex-col gap-2 sm:flex-row sm:flex-wrap print:hidden"
+        >
+          {LEVEL_KEYS.map((key) => {
+            const active = level === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={active}
+                onClick={() => changeLevel(key)}
+                className={`rounded-full border px-4 py-1.5 text-sm font-semibold transition ${
+                  active
+                    ? "border-primary-blue bg-primary-blue text-white shadow-sm"
+                    : "border-light-blue bg-white text-text-primary hover:bg-light-blue"
+                }`}
+              >
+                {t.levelLabels[key]}
+              </button>
+            );
+          })}
+        </div>
+
+        <article className="flex flex-col rounded-2xl border border-light-blue bg-light-blue p-5 shadow-sm">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
+            <span className="rounded-full bg-primary-blue px-3 py-1 text-xs font-semibold text-white">
+              {t.levelLabels[level]}
+            </span>
+            <div className="flex flex-col items-end">
+              <span
+                className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${fhBadgeClasses(fh)}`}
+              >
+                {fhLevel(fh, t)}
+              </span>
+              {fhDescription(fh, t) && (
+                <span className="mt-1 text-right text-[11px] italic text-slate-500">
+                  {fhDescription(fh, t)}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <Section title={t.sectionTitles.summary} body={version.summary} />
+          <Section title={t.sectionTitles.concepts} body={version.concepts} />
+          <Section title={t.sectionTitles.analogy} body={version.analogy} />
+
+          <p className="mt-4 border-t border-slate-300 pt-3 text-xs text-text-primary">
+            {article.attribution}{" "}
+            {originalLink(
+              article,
+              "font-semibold text-primary-blue underline underline-offset-2 hover:text-medium-blue",
+            )}
+          </p>
+        </article>
+
+        {article.quiz.length === QUIZ_SIZE && (
+          <QuizSection
+            questions={article.quiz}
+            answers={quizAnswers}
+            setAnswers={setQuizAnswers}
+            submitted={quizSubmitted}
+            onSubmit={handleQuizSubmit}
+            t={t}
+          />
+        )}
+
+        {(article.quiz.length !== QUIZ_SIZE || quizSubmitted) && (
+          <SurveySection
+            answers={surveyAnswers}
+            setAnswers={setSurveyAnswers}
+            submitted={surveySubmitted}
+            onSubmit={handleSurveySubmit}
+            t={t}
+          />
+        )}
+      </div>
+    );
+  }
+
+  // ---- List view ----
+  return (
+    <div>
+      <div className="mb-6 text-center">
+        <h2 className={`${jakarta.className} text-2xl font-bold text-primary-blue`}>
+          {L.title}
+        </h2>
+        <p className="mx-auto mt-2 max-w-2xl text-sm text-text-primary">{L.subtitle}</p>
+      </div>
+
+      <div
+        role="group"
+        aria-label={L.filterLabel}
+        className="mb-2 flex flex-wrap justify-center gap-2 print:hidden"
+      >
+        {chips.map((chip) => {
+          const active = discipline === chip.id;
+          return (
+            <button
+              key={chip.id}
+              type="button"
+              aria-pressed={active}
+              onClick={() => setDiscipline(chip.id)}
+              className={`rounded-full border px-4 py-1.5 text-sm font-semibold transition ${
+                active
+                  ? "border-primary-blue bg-primary-blue text-white shadow-sm"
+                  : "border-light-blue bg-white text-text-primary hover:bg-light-blue"
+              }`}
+            >
+              {chip.label}
+            </button>
+          );
+        })}
+      </div>
+      <p aria-live="polite" className="mb-6 text-center text-xs text-text-primary/70">
+        {L.count(visible.length)}
+      </p>
+
+      <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {visible.map((a) => (
+          <li key={a.id}>
+            <article className="flex h-full flex-col rounded-2xl border border-light-blue bg-light-blue p-5 shadow-sm print:break-inside-avoid print:shadow-none">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-primary-blue px-3 py-1 text-xs font-semibold text-white">
+                  {disciplineName(a.discipline)}
+                </span>
+                <span className="rounded-full border border-primary-blue px-2.5 py-1 text-xs font-semibold text-primary-blue">
+                  {L.originalLanguage}: {L.languageNames[a.language]}
+                </span>
+              </div>
+              <h3
+                className={`${jakarta.className} text-base font-bold leading-snug text-text-primary`}
+              >
+                {a.titleEs}
+              </h3>
+              <p className="mt-2 text-sm leading-relaxed text-text-primary">{a.blurb}</p>
+              <p className="mt-3 text-xs text-text-primary/80">
+                {a.authors} · {a.year}
+              </p>
+              <p className="mt-1 text-xs text-text-primary/80">
+                {L.license}: {a.license}
+              </p>
+              <div className="mt-auto flex flex-col gap-2 pt-4">
+                <button
+                  type="button"
+                  onClick={() => openArticle(a.id)}
+                  className="rounded-lg bg-primary-blue px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-medium-blue print:hidden"
+                >
+                  {L.read}
+                </button>
+                {originalLink(
+                  a,
+                  "text-xs font-semibold text-primary-blue underline underline-offset-2 hover:text-medium-blue",
+                )}
+              </div>
+            </article>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

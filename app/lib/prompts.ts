@@ -35,6 +35,11 @@
  *     'es') and prepends an explicit output-language instruction before the
  *     template's context block, applied to both the translate prompts and
  *     QUIZ_USER_PROMPT. The archived V1/V2/V3 template text is unchanged.
+ *   - 2026-10-13: QUIZ_USER_PROMPT now requires an "explanation" field on every
+ *     quiz question (1-2 sentences in Mexican Spanish, based ONLY on the
+ *     simplified text) so the UI can show feedback right after each answer.
+ *     JSON example format and Reglas updated accordingly. SYSTEM_PROMPT and
+ *     USER_PROMPT_V1/V2/V3 are UNCHANGED.
  */
 
 /** System prompt — identical for all three versions (SPEC 4.3). */
@@ -207,7 +212,8 @@ sin markdown, sin backticks. El formato debe ser EXACTAMENTE:
   {
     "question": "string",
     "options": ["string", "string", "string", "string"],
-    "correctIndex": 0
+    "correctIndex": 0,
+    "explanation": "string"
   },
   ...
 ]
@@ -217,6 +223,9 @@ Reglas:
 - Cada pregunta debe tener exactamente 4 opciones.
 - "correctIndex" debe ser un entero entre 0 y 3 que indique la opción
   correcta.
+- Cada pregunta debe incluir "explanation": un string de 1 a 2 oraciones
+  en español mexicano que explique por qué la opción correcta es correcta,
+  basada ÚNICAMENTE en el texto simplificado a continuación.
 - Las preguntas deben poder responderse solo con la información del
   texto simplificado a continuación.
 - No agregues explicaciones, notas, ni texto fuera del arreglo JSON.
