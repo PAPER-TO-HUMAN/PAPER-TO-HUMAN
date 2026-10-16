@@ -16,8 +16,12 @@ interface Metric {
   /** null when the API could not score the text (e.g. empty model output). */
   fh: number | null;
 }
-// Must match QUIZ_SIZE in app/api/translate/route.ts and the quiz prompt.
-const QUIZ_SIZE = 5;
+// Library quizzes are fixed at 5 questions (app/data/library.json). The
+// "Traducir mi paper" quiz length is user-chosen (QUIZ_MIN..QUIZ_MAX).
+const LIBRARY_QUIZ_SIZE = 5;
+const QUIZ_MIN = 3;
+const QUIZ_MAX = 10;
+const QUIZ_DEFAULT = 5;
 
 interface QuizQuestion {
   question: string;
@@ -202,6 +206,7 @@ const translations = {
       urlLabel: "Pega la URL del artículo",
       urlPlaceholder: "https://example.com/paper",
     },
+    quizSizeLabel: (n: number) => `Número de preguntas del test: ${n}`,
     translateButton: "Traducir",
     translateButtonBusy: "Procesando…",
     charCountExtracted: (n: number) => `Se extrajeron ${n.toLocaleString()} caracteres`,
@@ -299,7 +304,8 @@ const translations = {
       title: "¿Entendiste el artículo?",
       subtitle: "Responde estas preguntas sobre lo que acabas de leer",
       submit: "Enviar respuestas",
-      resultText: (score: number) => `Obtuviste ${score} de ${QUIZ_SIZE} respuestas correctas.`,
+      resultText: (score: number, total: number) =>
+        `Obtuviste ${score} de ${total} respuestas correctas.`,
       recommendReread: "Te recomendamos releer el resumen.",
       goodJob: "¡Buen trabajo!",
       correct: "Correcto",
@@ -453,6 +459,7 @@ const translations = {
       urlLabel: "Paste the paper's URL",
       urlPlaceholder: "https://example.com/paper",
     },
+    quizSizeLabel: (n: number) => `Number of quiz questions: ${n}`,
     translateButton: "Translate",
     translateButtonBusy: "Processing…",
     charCountExtracted: (n: number) => `Extracted ${n.toLocaleString()} characters`,
@@ -550,7 +557,8 @@ const translations = {
       title: "Did you understand the paper?",
       subtitle: "Answer these questions about what you just read",
       submit: "Submit answers",
-      resultText: (score: number) => `You got ${score} out of ${QUIZ_SIZE} correct.`,
+      resultText: (score: number, total: number) =>
+        `You got ${score} out of ${total} correct.`,
       recommendReread: "We recommend re-reading the summary.",
       goodJob: "Great job!",
       correct: "Correct",
@@ -795,9 +803,9 @@ export default function Home() {
   const [surveyAnswers, setSurveyAnswers] = useState<SurveyAnswers>(EMPTY_SURVEY);
   const [surveySubmitted, setSurveySubmitted] = useState(false);
   // Comprehension quiz — purely local state, nothing is sent anywhere.
-  const [quizAnswers, setQuizAnswers] = useState<(number | null)[]>(
-    Array(QUIZ_SIZE).fill(null),
-  );
+  const [quizAnswers, setQuizAnswers] = useState<(number | null)[]>([]);
+  // Number of quiz questions requested for "Traducir mi paper" (slider).
+  const [quizSize, setQuizSize] = useState(QUIZ_DEFAULT);
   const [quizSubmitted, setQuizSubmitted] = useState(false);
   const [mode, setMode] = useState<Mode>("all");
   const [selectedLevel, setSelectedLevel] = useState<Level>("secundaria");
@@ -876,7 +884,7 @@ export default function Home() {
     setQ3(null);
     setSurveyAnswers(EMPTY_SURVEY);
     setSurveySubmitted(false);
-    setQuizAnswers(Array(QUIZ_SIZE).fill(null));
+    setQuizAnswers([]);
     setQuizSubmitted(false);
     setFamiliarity(null);
     setPurpose(null);
@@ -910,7 +918,7 @@ export default function Home() {
     setQ3(null);
     setSurveyAnswers(EMPTY_SURVEY);
     setSurveySubmitted(false);
-    setQuizAnswers(Array(QUIZ_SIZE).fill(null));
+    setQuizAnswers([]);
     setQuizSubmitted(false);
     setFamiliarity(null);
     setPurpose(null);
@@ -968,6 +976,7 @@ export default function Home() {
           purpose,
           style,
           language,
+          quizSize,
         }),
       });
       const data = await readJson(res);
@@ -985,6 +994,9 @@ export default function Home() {
       }
 
       setResult(payload);
+      // The model may return fewer questions than requested: size the answers
+      // array to what actually arrived.
+      setQuizAnswers(Array(payload.quiz?.length ?? 0).fill(null));
       setResultMode(mode);
       setResultLevel(selectedLevel);
       setResultProfile({ familiarity, purpose, style });
@@ -1295,6 +1307,25 @@ export default function Home() {
             </div>
 
             <div className="mt-6 flex flex-col items-center gap-3">
+              <div className="w-full max-w-xs">
+                <label
+                  htmlFor="quiz-size"
+                  className="mb-2 block text-center text-sm font-medium text-text-primary"
+                >
+                  {t.quizSizeLabel(quizSize)}
+                </label>
+                <input
+                  id="quiz-size"
+                  type="range"
+                  min={QUIZ_MIN}
+                  max={QUIZ_MAX}
+                  step={1}
+                  value={quizSize}
+                  onChange={(e) => setQuizSize(Number(e.target.value))}
+                  disabled={busy}
+                  className="block w-full cursor-pointer accent-primary-blue disabled:cursor-not-allowed disabled:opacity-50"
+                />
+              </div>
               <button
                 onClick={handleTranslate}
                 disabled={!canTranslate}
@@ -1526,7 +1557,7 @@ export default function Home() {
 
         {/* ---- Comprehension quiz (SPEC extension) — based on the simplified
             text the user just read, never the original paper. ---- */}
-        {result && result.quiz.length === QUIZ_SIZE && (
+        {result && result.quiz.length > 0 && (
           <QuizSection
             questions={result.quiz}
             answers={quizAnswers}
@@ -1539,7 +1570,7 @@ export default function Home() {
 
         {/* ---- Perception survey (shown after a translation result is available,
             and after the quiz — when there is one — has been submitted) ---- */}
-        {result && (result.quiz.length !== QUIZ_SIZE || quizSubmitted) && (
+        {result && (result.quiz.length === 0 || quizSubmitted) && (
           <SurveySection
             answers={surveyAnswers}
             setAnswers={setSurveyAnswers}
@@ -1987,8 +2018,8 @@ function QuizSection({
 
       {submitted ? (
         <p className="mt-6 text-sm font-semibold text-text-primary">
-          {t.quiz.resultText(score)}{" "}
-          {score < Math.ceil(QUIZ_SIZE / 2) ? t.quiz.recommendReread : t.quiz.goodJob}
+          {t.quiz.resultText(score, questions.length)}{" "}
+          {score < Math.ceil(questions.length / 2) ? t.quiz.recommendReread : t.quiz.goodJob}
         </p>
       ) : (
         <button
@@ -2170,7 +2201,7 @@ function LibraryTab({ t, language }: { t: UIText; language: Language }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [level, setLevel] = useState<Level>("secundaria");
   const [quizAnswers, setQuizAnswers] = useState<(number | null)[]>(
-    Array(QUIZ_SIZE).fill(null),
+    Array(LIBRARY_QUIZ_SIZE).fill(null),
   );
   const [quizSubmitted, setQuizSubmitted] = useState(false);
   const [surveyAnswers, setSurveyAnswers] = useState<SurveyAnswers>(EMPTY_SURVEY);
@@ -2196,7 +2227,7 @@ function LibraryTab({ t, language }: { t: UIText; language: Language }) {
   }, [openId]);
 
   function resetAssessment() {
-    setQuizAnswers(Array(QUIZ_SIZE).fill(null));
+    setQuizAnswers(Array(LIBRARY_QUIZ_SIZE).fill(null));
     setQuizSubmitted(false);
     setSurveyAnswers(EMPTY_SURVEY);
     setSurveySubmitted(false);
@@ -2347,7 +2378,7 @@ function LibraryTab({ t, language }: { t: UIText; language: Language }) {
           </p>
         </article>
 
-        {article.quiz.length === QUIZ_SIZE && (
+        {article.quiz.length === LIBRARY_QUIZ_SIZE && (
           <QuizSection
             questions={article.quiz}
             answers={quizAnswers}
@@ -2358,7 +2389,7 @@ function LibraryTab({ t, language }: { t: UIText; language: Language }) {
           />
         )}
 
-        {(article.quiz.length !== QUIZ_SIZE || quizSubmitted) && (
+        {(article.quiz.length !== LIBRARY_QUIZ_SIZE || quizSubmitted) && (
           <SurveySection
             answers={surveyAnswers}
             setAnswers={setSurveyAnswers}

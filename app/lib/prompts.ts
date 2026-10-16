@@ -40,6 +40,12 @@
  *     simplified text) so the UI can show feedback right after each answer.
  *     JSON example format and Reglas updated accordingly. SYSTEM_PROMPT and
  *     USER_PROMPT_V1/V2/V3 are UNCHANGED.
+ *   - 2026-10-15: QUIZ_USER_PROMPT now uses an {n} token instead of a hard-coded
+ *     5 ("Generate {n} multiple choice questions", "Exactamente {n}
+ *     preguntas") so the user can choose the quiz length (3-10) for "Traducir
+ *     mi paper". Added buildQuizPrompt(), which substitutes {n} and then
+ *     delegates to buildUserPrompt(). SYSTEM_PROMPT and USER_PROMPT_V1/V2/V3
+ *     are UNCHANGED.
  */
 
 /** System prompt — identical for all three versions (SPEC 4.3). */
@@ -188,6 +194,20 @@ export function buildUserPrompt(
 }
 
 /**
+ * Same as buildUserPrompt() for QUIZ_USER_PROMPT, but also substitutes the
+ * `{n}` token with the requested number of questions. {n} is replaced before
+ * the paper text is inserted, so a literal "{n}" inside the text is untouched.
+ */
+export function buildQuizPrompt(
+  template: string,
+  text: string,
+  quizSize: number,
+  language: "en" | "es" = "es",
+): string {
+  return buildUserPrompt(template.replaceAll("{n}", String(quizSize)), text, language);
+}
+
+/**
  * Quiz prompts — mini comprehension test (not part of the SPEC 4.3 archive).
  * Output must be raw JSON only, since route.ts parses it directly with no
  * markdown/prose to strip.
@@ -198,7 +218,7 @@ are given. Never invent facts that are not in the text. Respond with ONLY
 raw JSON — no markdown, no code fences, no commentary, no preamble, no
 explanation of any kind.`;
 
-export const QUIZ_USER_PROMPT = `Generate 5 multiple choice questions based ONLY on the following
+export const QUIZ_USER_PROMPT = `Generate {n} multiple choice questions based ONLY on the following
 simplified text. Do not ask about information not present in this text.
 
 Write the questions and options in Mexican Spanish (español mexicano),
@@ -219,7 +239,7 @@ sin markdown, sin backticks. El formato debe ser EXACTAMENTE:
 ]
 
 Reglas:
-- Exactamente 5 preguntas.
+- Exactamente {n} preguntas.
 - Cada pregunta debe tener exactamente 4 opciones.
 - "correctIndex" debe ser un entero entre 0 y 3 que indique la opción
   correcta.

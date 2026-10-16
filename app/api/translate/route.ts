@@ -9,6 +9,7 @@ import {
   QUIZ_SYSTEM_PROMPT,
   QUIZ_USER_PROMPT,
   buildUserPrompt,
+  buildQuizPrompt,
 } from "@/app/lib/prompts";
 import { checkEnv, checkOrigin, checkRateLimit } from "@/app/lib/http";
 
@@ -31,14 +32,28 @@ const MAX_TOTAL_TOKENS = 15_000; // safety cap on total input tokens across all 
 // silently unparseable, so this is deliberately generous.
 const MAX_OUTPUT_TOKENS = 8_000;
 
-// 5 questions + 4 options each. Gemini 2.5+/3.x "thinking" tokens count against
+// Quiz length is chosen by the user (slider) but NEVER trusted from the client:
+// it is clamped to an integer in [QUIZ_MIN_SIZE, QUIZ_MAX_SIZE], default 5.
+const QUIZ_MIN_SIZE = 3;
+const QUIZ_MAX_SIZE = 10;
+const QUIZ_DEFAULT_SIZE = 5;
+
+// Output budget scales per question (4 options + explanation, ~200 visible
+// tokens each). Gemini 2.5+/3.x "thinking" tokens count against
 // maxOutputTokens, so a tight cap truncates the JSON mid-array and the quiz is
-// silently dropped — keep generous headroom. 6,144 (up from 4,096): the new
-// per-question "explanation" adds roughly 5 x 60 = 300 visible tokens on top of
-// ~1,000 for the questions/options, and the extra ~2,000 keeps the same
-// thinking-token headroom as before without approaching MAX_OUTPUT_TOKENS.
-const QUIZ_SIZE = 5;
-const QUIZ_MAX_OUTPUT_TOKENS = 6_144;
+// silently dropped: keep a fixed base for thinking headroom plus 400 per
+// question. 5 questions -> 6,000 (matches the previous fixed 6,144), 10 ->
+// 8,000, which is the ceiling (same as MAX_OUTPUT_TOKENS).
+const QUIZ_TOKENS_BASE = 4_000;
+const QUIZ_TOKENS_PER_QUESTION = 400;
+const QUIZ_MAX_OUTPUT_TOKENS_CAP = 8_000;
+
+function quizMaxOutputTokens(quizSize: number): number {
+  return Math.min(
+    QUIZ_TOKENS_BASE + QUIZ_TOKENS_PER_QUESTION * quizSize,
+    QUIZ_MAX_OUTPUT_TOKENS_CAP,
+  );
+}
 
 // Per-call ceiling, comfortably inside maxDuration so a stuck upstream call
 // surfaces as our own timeout message rather than the platform killing the
@@ -251,10 +266,10 @@ function validateQuizItem(item: unknown, index: number): QuizQuestion {
   return { question, options: options as string[], correctIndex, explanation };
 }
 
-/** Validate the full parsed quiz payload: exactly QUIZ_SIZE well-formed items. */
-function validateQuiz(parsed: unknown): QuizQuestion[] {
-  if (!Array.isArray(parsed) || parsed.length !== QUIZ_SIZE) {
-    throw new Error(`quiz response is not an array of exactly ${QUIZ_SIZE} items`);
+/** Validate the full parsed quiz payload: exactly `quizSize` well-formed items. */
+function validateQuiz(parsed: unknown, quizSize: number): QuizQuestion[] {
+  if (!Array.isArray(parsed) || parsed.length !== quizSize) {
+    throw new Error(`quiz response is not an array of exactly ${quizSize} items`);
   }
   return parsed.map((item, i) => validateQuizItem(item, i));
 }
@@ -335,6 +350,7 @@ export async function POST(req: Request) {
     mode?: string;
     selectedLevel?: string;
     language?: string;
+    quizSize?: unknown;
   };
   try {
     body = await req.json();
@@ -349,6 +365,13 @@ export async function POST(req: Request) {
   const source = typeof body.source === "string" ? body.source : "unknown";
   let text = (typeof body.text === "string" ? body.text : "").trim();
   const language: "en" | "es" = body.language === "en" ? "en" : "es";
+  const quizSize =
+    typeof body.quizSize === "number" &&
+    Number.isInteger(body.quizSize) &&
+    body.quizSize >= QUIZ_MIN_SIZE &&
+    body.quizSize <= QUIZ_MAX_SIZE
+      ? body.quizSize
+      : QUIZ_DEFAULT_SIZE;
 
   // Single-level selection mode (SPEC extension). "all" (or anything else,
   // including undefined) preserves the original three-version behavior.
@@ -441,7 +464,7 @@ export async function POST(req: Request) {
   }
 
   /**
-   * Generate the 3-question comprehension quiz FROM THE SIMPLIFIED TEXT the
+   * Generate the `quizSize`-question comprehension quiz FROM THE SIMPLIFIED TEXT the
    * user actually reads (never the original paper) — otherwise the quiz can
    * ask about details the simplification dropped. Best-effort: this is a
    * bonus feature layered on top of the study's core translation output, so
@@ -451,21 +474,22 @@ export async function POST(req: Request) {
   async function generateQuiz(
     quizText: string,
     language: "en" | "es",
+    quizSize: number,
   ): Promise<QuizQuestion[]> {
     let raw = "";
     try {
       const result = await generateText({
         model: MODEL,
-        maxOutputTokens: QUIZ_MAX_OUTPUT_TOKENS,
+        maxOutputTokens: quizMaxOutputTokens(quizSize),
         system: QUIZ_SYSTEM_PROMPT,
-        prompt: buildUserPrompt(QUIZ_USER_PROMPT, quizText, language),
+        prompt: buildQuizPrompt(QUIZ_USER_PROMPT, quizText, quizSize, language),
         abortSignal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
       });
 
       raw = result.text.trim();
 
       const parsed: unknown = JSON.parse(stripCodeFence(raw));
-      return validateQuiz(parsed);
+      return validateQuiz(parsed, quizSize);
     } catch (err) {
       console.warn("Quiz generation failed, degrading to empty quiz:", err, {
         rawResponse: raw.slice(0, 2_000),
@@ -579,7 +603,7 @@ export async function POST(req: Request) {
   const quizSource =
     mode === "single" ? producedByLabel.get(LEVEL_TO_VERSION[selectedLevel]) : v2;
   const quiz = quizSource
-    ? await generateQuiz(versionText(quizSource), language)
+    ? await generateQuiz(versionText(quizSource), language, quizSize)
     : [];
 
   return Response.json({ v1, v2, v3, metrics, source, truncated, warnings, quiz });
